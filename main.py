@@ -1,4 +1,5 @@
 import io
+import os
 import time
 import math
 import base64
@@ -9,8 +10,9 @@ import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend for headless cloud servers
 import matplotlib.pyplot as plt
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Header
 from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from jinja2 import Template
 from weasyprint import HTML
@@ -46,7 +48,6 @@ DMIT_RULES = {
     }
 }
 
-# Vision Output Schema
 class FingerprintDetectionResult(BaseModel):
     pattern_code: str = Field(description="Must be one of: WT, WS, WD, WC, WP, U, R, A, AT")
     estimated_ridge_count: int = Field(description="Approximate number of ridges between core and delta (usually 0 for Arch, 8-22 for Loops/Whorls)")
@@ -54,7 +55,7 @@ class FingerprintDetectionResult(BaseModel):
 # ==============================================================================
 # 2. AUTOMATED VISION CLASSIFIER WITH RETRY & BACKOFF
 # ==============================================================================
-def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str, max_retries: int = 4) -> tuple[str, int]:
+def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int]:
     client = genai.Client(api_key=api_key)
     image = Image.open(io.BytesIO(image_bytes))
 
@@ -78,8 +79,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
 
     for attempt in range(max_retries):
         try:
-            # Stagger consecutive API requests to avoid burst limit thresholds
-            time.sleep(1.2)
+            time.sleep(1.0)
 
             response = client.models.generate_content(
                 model='gemini-3.6-flash',
@@ -100,7 +100,6 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
 
         except Exception as e:
             if attempt < max_retries - 1:
-                # Exponential backoff pause: 2s, 4s, 8s
                 wait_time = (2 ** attempt) * 2
                 time.sleep(wait_time)
                 continue
@@ -119,7 +118,9 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     vak_rc = {"Visual": 0, "Auditory": 0, "Kinesthetic": 0}
 
     for code, f_data in finger_results.items():
-        mapping = DMIT_RULES["fingerMappings"][code]
+        mapping = DMIT_RULES["fingerMappings"].get(code, {
+            "fingerName": code, "brainHemisphere": "Unknown", "brainLobe": "Unknown", "primaryIntelligence": "General"
+        })
         p_def = DMIT_RULES["patternDefinitions"].get(f_data["pattern"], DMIT_RULES["patternDefinitions"]["U"])
 
         rc = f_data["rc"]
@@ -156,18 +157,15 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
 
     rankings = sorted(rankings, key=lambda x: x["contribution_pct"], reverse=True)
 
-    # Hemisphere balance
     tot_hemi = max(left_brain_rc + right_brain_rc, 1)
     left_pct = round((left_brain_rc / tot_hemi) * 100, 1)
     right_pct = round((right_brain_rc / tot_hemi) * 100, 1)
     dominance = "Balanced Brain" if abs(left_pct - right_pct) <= 4 else ("Left Brain Dominant" if left_pct > right_pct else "Right Brain Dominant")
 
-    # VAK
     tot_vak = max(sum(vak_rc.values()), 1)
     vak_scores = {k: round((v / tot_vak) * 100, 1) for k, v in vak_rc.items()}
     dom_vak = max(vak_scores, key=vak_scores.get)
 
-    # Radar Chart
     order = ["L1", "L2", "L3", "L4", "L5", "R5", "R4", "R3", "R2", "R1"]
     r_map = {item["finger"]: item["contribution_pct"] for item in rankings}
     vals = [r_map.get(k, 0) for k in order]
@@ -186,7 +184,6 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     plt.close(fig)
     radar_img = f"data:image/png;base64,{base64.b64encode(buf_radar.getvalue()).decode()}"
 
-    # Hemisphere Bar Chart
     fig2, ax2 = plt.subplots(figsize=(6, 1.2))
     ax2.barh(0, left_pct, color="#2B6CB0", height=0.6)
     ax2.barh(0, right_pct, left=left_pct, color="#805AD5", height=0.6)
@@ -267,17 +264,60 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     return pdf_buf.getvalue()
 
 # ==============================================================================
-# 4. FASTAPI AUTOMATED UPLOAD ENDPOINT
+# 4. FASTAPI APP & ENDPOINTS
 # ==============================================================================
 app = FastAPI(title="DMIT Automated AI Scanner API")
+
+# Enable CORS for external frontend connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/", response_class=HTMLResponse)
 def root():
     return "<h2>DMIT Automated Vision API is Online</h2><p>Visit <a href='/docs'>/docs</a> to upload fingerprint photos.</p>"
 
+# 1. Health check for the "Test Connection" button
+@app.get("/classify")
+def test_classify_connection():
+    return {"status": "ok", "message": "Classification service is reachable"}
+
+# 2. Single-finger auto-detect endpoint for the external profile builder
+@app.post("/classify")
+async def classify_single_finger(
+    file: UploadFile = File(...),
+    finger: Optional[str] = Form(None),
+    x_api_key: Optional[str] = Header(None)
+):
+    api_key = x_api_key or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Gemini API Key is required. Set it in Render Environment Variables.")
+
+    try:
+        image_bytes = await file.read()
+        pattern_code, rc = classify_fingerprint_image_ai(
+            image_bytes=image_bytes,
+            api_key=api_key,
+            finger_code=finger or "Unknown"
+        )
+        return {
+            "pattern": pattern_code,
+            "pattern_name": DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", pattern_code),
+            "ridge_count": rc,
+            "ridge_count_l": rc if pattern_code.startswith("W") else (rc if pattern_code == "U" else 0),
+            "ridge_count_r": rc if pattern_code.startswith("W") else (rc if pattern_code == "R" else 0)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
+
+# 3. 10-Finger batch scan and PDF generator
 @app.post("/api/v1/auto-scan-and-generate-report")
 async def auto_scan_and_generate_report(
-    api_key: str = Form(..., description="Your Google AI Studio Gemini API Key"),
+    api_key: Optional[str] = Form(None, description="Your Google AI Studio Gemini API Key (or set via Render Env)"),
     subject_id: str = Form("STUDENT_001", description="Subject/Client Name or ID"),
     l1: UploadFile = File(..., description="Left Thumb Image"),
     l2: UploadFile = File(..., description="Left Index Image"),
@@ -290,6 +330,10 @@ async def auto_scan_and_generate_report(
     r4: UploadFile = File(..., description="Right Ring Image"),
     r5: UploadFile = File(..., description="Right Pinky Image"),
 ):
+    effective_api_key = api_key or os.environ.get("GEMINI_API_KEY")
+    if not effective_api_key:
+        raise HTTPException(status_code=400, detail="Gemini API key is required.")
+
     uploads = {
         "L1": l1, "L2": l2, "L3": l3, "L4": l4, "L5": l5,
         "R1": r1, "R2": r2, "R3": r3, "R4": r4, "R5": r5
@@ -300,7 +344,7 @@ async def auto_scan_and_generate_report(
     for code, file_obj in uploads.items():
         try:
             image_bytes = await file_obj.read()
-            pattern_code, rc = classify_fingerprint_image_ai(image_bytes, api_key, code)
+            pattern_code, rc = classify_fingerprint_image_ai(image_bytes, effective_api_key, code)
             finger_results[code] = {"pattern": pattern_code, "rc": rc}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to analyze image for {code}: {str(e)}")
