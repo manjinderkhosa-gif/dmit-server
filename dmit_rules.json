@@ -1,0 +1,184 @@
+{
+  "version": "1.0.0",
+  "fingerMappings": {
+    "L1": {
+      "fingerName": "Left Thumb",
+      "hand": "Left",
+      "brainHemisphere": "Right",
+      "brainLobe": "Prefrontal Lobe",
+      "primaryIntelligence": "Interpersonal Intelligence",
+      "secondaryIntelligence": "Leadership & Communication",
+      "coreTraits": ["Social awareness", "Visionary planning", "Emotional management"]
+    },
+    "R1": {
+      "fingerName": "Right Thumb",
+      "hand": "Right",
+      "brainHemisphere": "Left",
+      "brainLobe": "Prefrontal Lobe",
+      "primaryIntelligence": "Intrapersonal Intelligence",
+      "secondaryIntelligence": "Self-Reflection & Willpower",
+      "coreTraits": ["Self-discipline", "Goal orientation", "Execution focus"]
+    },
+    "L2": {
+      "fingerName": "Left Index",
+      "hand": "Left",
+      "brainHemisphere": "Right",
+      "brainLobe": "Frontal Lobe",
+      "primaryIntelligence": "Spatial Intelligence",
+      "secondaryIntelligence": "Imagination & Creative Concepts",
+      "coreTraits": ["3D spatialization", "Abstract idea generation"]
+    },
+    "R2": {
+      "fingerName": "Right Index",
+      "hand": "Right",
+      "brainHemisphere": "Left",
+      "brainLobe": "Frontal Lobe",
+      "primaryIntelligence": "Logical-Mathematical Intelligence",
+      "secondaryIntelligence": "Analytical Reasoning",
+      "coreTraits": ["Sequential logic", "Numerical problem-solving"]
+    },
+    "L3": {
+      "fingerName": "Left Middle",
+      "hand": "Left",
+      "brainHemisphere": "Right",
+      "brainLobe": "Parietal Lobe",
+      "primaryIntelligence": "Kinesthetic Intelligence (Gross Motor)",
+      "secondaryIntelligence": "Body Coordination & Rhythm",
+      "coreTraits": ["Athletics", "Spatial balance", "Physical movement"]
+    },
+    "R3": {
+      "fingerName": "Right Middle",
+      "hand": "Right",
+      "brainHemisphere": "Left",
+      "brainLobe": "Parietal Lobe",
+      "primaryIntelligence": "Kinesthetic Intelligence (Fine Motor)",
+      "secondaryIntelligence": "Manual Dexterity",
+      "coreTraits": ["Hand-eye coordination", "Precision craft", "Tool handling"]
+    },
+    "L4": {
+      "fingerName": "Left Ring",
+      "hand": "Left",
+      "brainHemisphere": "Right",
+      "brainLobe": "Temporal Lobe",
+      "primaryIntelligence": "Musical Intelligence",
+      "secondaryIntelligence": "Auditory Appreciation & Tone",
+      "coreTraits": ["Pitch sensitivity", "Emotional sound perception"]
+    },
+    "R4": {
+      "fingerName": "Right Ring",
+      "hand": "Right",
+      "brainHemisphere": "Left",
+      "brainLobe": "Temporal Lobe",
+      "primaryIntelligence": "Linguistic Intelligence",
+      "secondaryIntelligence": "Verbal Memory & Grammar",
+      "coreTraits": ["Language acquisition", "Spoken articulation"]
+    },
+    "L5": {
+      "fingerName": "Left Pinky",
+      "hand": "Left",
+      "brainHemisphere": "Right",
+      "brainLobe": "Occipital Lobe",
+      "primaryIntelligence": "Visual-Aesthetic Intelligence",
+      "secondaryIntelligence": "Art & Color Perception",
+      "coreTraits": ["Visual layout evaluation", "Artistic appreciation"]
+    },
+    "R5": {
+      "fingerName": "Right Pinky",
+      "hand": "Right",
+      "brainHemisphere": "Left",
+      "brainLobe": "Occipital Lobe",
+      "primaryIntelligence": "Visual-Observation Intelligence",
+      "secondaryIntelligence": "Text & Pattern Identification",
+      "coreTraits": ["Observation speed", "Reading comprehension"]
+    }
+  },
+  "patternDefinitions": {
+    "WT": {
+      "patternGroup": "Whorl",
+      "name": "Target / Plain Whorl",
+      "deltaCount": 2,
+      "learningStyle": "Self-Directed / Goal-Driven",
+      "personalityCharacteristics": ["Goal-driven", "High concentration", "Decisive", "Independent"],
+      "defaultWeightMultiplier": 1.0
+    },
+    "WC": {
+      "patternGroup": "Whorl",
+      "name": "Double Loop / Composite Whorl",
+      "deltaCount": 2,
+      "learningStyle": "Reflective / Imitative",
+      "personalityCharacteristics": ["Multi-perspective", "Adaptable negotiator", "Broad focus"],
+      "defaultWeightMultiplier": 1.0
+    },
+    "WP": {
+      "patternGroup": "Whorl",
+      "name": "Peacock's Eye",
+      "deltaCount": 2,
+      "learningStyle": "Self-Directed / Goal-Driven",
+      "personalityCharacteristics": ["Artistic flair", "Intuitive perception", "Refined leadership"],
+      "defaultWeightMultiplier": 1.1
+    },
+    "U": {
+      "patternGroup": "Loop",
+      "name": "Ulnar Loop",
+      "deltaCount": 1,
+      "learningStyle": "Reflective / Imitative",
+      "personalityCharacteristics": ["Cooperative", "Environment-absorbent", "Empathetic team worker"],
+      "defaultWeightMultiplier": 1.0
+    },
+    "R": {
+      "patternGroup": "Loop",
+      "name": "Radial Loop",
+      "deltaCount": 1,
+      "learningStyle": "Reverse / Creative",
+      "personalityCharacteristics": ["Unconventional thinker", "Questions conventions", "Independent logic"],
+      "defaultWeightMultiplier": 1.15
+    },
+    "A": {
+      "patternGroup": "Arch",
+      "name": "Simple Arch",
+      "deltaCount": 0,
+      "learningStyle": "Step-by-Step / Sponge",
+      "personalityCharacteristics": ["Stepwise learner", "Methodical", "Needs solid foundations"],
+      "defaultWeightMultiplier": 0.85
+    },
+    "AT": {
+      "patternGroup": "Arch",
+      "name": "Tented Arch",
+      "deltaCount": 0,
+      "learningStyle": "Impulsive / Emotional",
+      "personalityCharacteristics": ["Enthusiastic", "Fast burst learner", "Emotionally engaged"],
+      "defaultWeightMultiplier": 0.95
+    }
+  },
+  "tfrcCapacityRanges": [
+    {
+      "minScore": 0,
+      "maxScore": 99,
+      "category": "Structured / Stepwise Learning Capacity",
+      "learningRecommendation": "Focus on modular, sequential tasks with clear instructions and steady pacing."
+    },
+    {
+      "minScore": 100,
+      "maxScore": 140,
+      "category": "Standard Learning Capacity",
+      "learningRecommendation": "Balanced between structured frameworks and self-directed problem-solving."
+    },
+    {
+      "minScore": 141,
+      "maxScore": 200,
+      "category": "High Learning Capacity",
+      "learningRecommendation": "Thrives on multi-domain inputs, cross-disciplinary concepts, and fast-paced learning."
+    },
+    {
+      "minScore": 201,
+      "maxScore": 300,
+      "category": "Hyperactive / Intensive Input Capacity",
+      "learningRecommendation": "Requires rich intellectual stimuli to avoid boredom; prioritization techniques essential."
+    }
+  ],
+  "scoringAlgorithms": {
+    "tfrcFormula": "SUM(MAX(finger.leftRidgeCount, finger.rightRidgeCount) FOR ALL 10 fingers)",
+    "afrcFormula": "SUM(finger.leftRidgeCount + finger.rightRidgeCount FOR ALL 10 fingers)",
+    "lobeContributionPercentageFormula": "(finger.primaryRidgeCount / TFRC) * 100"
+  }
+}
