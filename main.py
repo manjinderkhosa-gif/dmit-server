@@ -398,3 +398,78 @@ async def auto_scan_and_generate_report(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=DMIT_Report_{subject_id}.pdf"}
     )
+# Add these duplicate endpoint handlers so BOTH URL styles work:
+
+@app.get("/")
+@app.get("/classify")
+def test_classify_connection():
+    return {"status": "ok", "message": "Classification service is reachable"}
+
+@app.post("/")
+@app.post("/classify")
+async def classify_single_finger_flexible(request: Request):
+    api_key = request.headers.get("x-api-key") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Gemini API Key missing.")
+
+    image_bytes = None
+    finger_code = "Unknown"
+    content_type = request.headers.get("content-type", "")
+
+    # Multi-part form upload
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        for key, value in form.items():
+            if isinstance(value, UploadFile):
+                image_bytes = await value.read()
+            elif key in ["finger", "finger_code", "position", "id"]:
+                finger_code = str(value)
+
+    # Base64 JSON upload
+    elif "application/json" in content_type:
+        body = await request.json()
+        finger_code = body.get("finger", body.get("finger_code", "Unknown"))
+        data_str = body.get("image") or body.get("file") or body.get("image_base64")
+        if data_str:
+            if "," in data_str:
+                data_str = data_str.split(",")[1]
+            image_bytes = base64.b64decode(data_str)
+
+    # Raw binary stream
+    if not image_bytes:
+        raw_body = await request.body()
+        if len(raw_body) > 100:
+            image_bytes = raw_body
+
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="No fingerprint image received.")
+
+    try:
+        pattern_code, rc = classify_fingerprint_image_ai(
+            image_bytes=image_bytes,
+            api_key=api_key,
+            finger_code=finger_code
+        )
+
+        p_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", pattern_code)
+        is_whorl = pattern_code.startswith("W")
+        rc_left = rc if (is_whorl or pattern_code == "U") else 0
+        rc_right = rc if (is_whorl or pattern_code == "R") else 0
+
+        return JSONResponse(content={
+            "pattern": pattern_code,
+            "pattern_type": pattern_code,
+            "pattern_code": pattern_code,
+            "pattern_name": p_name,
+            "name": p_name,
+            "ridge_count": rc,
+            "rc": rc,
+            "ridge_count_l": rc_left,
+            "ridge_count_r": rc_right,
+            "rc_left": rc_left,
+            "rc_right": rc_right,
+            "left_rc": rc_left,
+            "right_rc": rc_right
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
