@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from PIL import Image
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Headless server backend
 import matplotlib.pyplot as plt
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
@@ -52,31 +52,35 @@ DMIT_RULES = {
 }
 
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER (GEMINI 3.6 FLASH)
+# 2. AUTOMATED VISION CLASSIFIER WITH RETRY & 429 RECOVERY
 # ==============================================================================
-def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int]:
+def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int, int]:
     client = genai.Client(api_key=api_key)
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
     prompt = f"""
     You are an expert Dermatoglyphics and Fingerprint Classification specialist based on the BMD Counseling system.
-    Analyze this fingerprint image for finger {finger_code}.
+    Analyze this fingerprint image for finger position: {finger_code}.
 
-    Classify the exact pattern into ONE of these codes:
-    - WT: Target Whorl (Concentric rings with 2 deltas)
-    - WS: Spiral Whorl (Spiral rotating outward with 2 deltas)
-    - WD: Double loop (S-shape interlocking loops with 2 deltas)
-    - WC: Composite Whorl
-    - WP: Peacock Eye (small center whorl inside a loop)
-    - U: Ulnar loop (curving toward pinky side, 1 delta)
-    - R: Radial loop (curving toward thumb side, 1 delta)
-    - A: Plain Arch (wave-like ridges, 0 deltas)
-    - AT: Tented Arch (sharp upward spike, 0 deltas)
+    1. Classify the exact pattern into ONE of these codes:
+       - WT: Target Whorl (Concentric rings with 2 deltas)
+       - WS: Spiral Whorl (Spiral rotating outward with 2 deltas)
+       - WD: Double loop (S-shape interlocking loops with 2 deltas)
+       - WC: Composite Whorl
+       - WP: Peacock Eye (small center whorl inside a loop)
+       - U: Ulnar loop (curving toward pinky side, 1 delta)
+       - R: Radial loop (curving toward thumb side, 1 delta)
+       - A: Plain Arch (wave-like ridges, 0 deltas)
+       - AT: Tented Arch (sharp upward spike, 0 deltas)
 
-    Also estimate the Ridge Count (RC) between the core center and delta point.
+    2. Calculate the Ridge Counts (RC):
+       - If Whorl (WT, WS, WD, WC, WP): Provide left delta ridge count and right delta ridge count (usually 8-22).
+       - If Ulnar Loop (U): Ridge count is on the left or right depending on flow, the other is 0.
+       - If Radial Loop (R): Ridge count is on the thumb side, the other is 0.
+       - If Arch (A, AT): Both counts are 0.
 
     Return ONLY a JSON object formatted exactly as:
-    {{"pattern_code": "WT", "estimated_ridge_count": 14}}
+    {{"pattern_code": "WT", "ridge_count_left": 14, "ridge_count_right": 16}}
     """
 
     for attempt in range(max_retries):
@@ -96,13 +100,31 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             code = str(data.get("pattern_code", "U")).upper().strip()
             if code not in DMIT_RULES["patternDefinitions"]:
                 code = "U"
-            rc = int(data.get("estimated_ridge_count", 0))
-            return code, max(rc, 0)
+
+            rc_l = int(data.get("ridge_count_left", data.get("rc_left", 0)))
+            rc_r = int(data.get("ridge_count_right", data.get("rc_right", 0)))
+            
+            # If total ridge count was returned instead, split appropriately
+            if rc_l == 0 and rc_r == 0:
+                est = int(data.get("estimated_ridge_count", data.get("ridge_count", 0)))
+                if code.startswith("W"):
+                    rc_l, rc_r = est, est
+                elif code == "U":
+                    rc_l, rc_r = est, 0
+                elif code == "R":
+                    rc_l, rc_r = 0, est
+
+            return code, max(rc_l, 0), max(rc_r, 0)
 
         except Exception as e:
-            print(f"[Attempt {attempt+1}] Vision classification error: {str(e)}")
+            err_msg = str(e)
+            print(f"[Attempt {attempt+1}] Vision classification error: {err_msg}")
             if attempt < max_retries - 1:
-                time.sleep((2 ** attempt) * 2)
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                    print("Quota rate limit reached. Backing off for 12 seconds...")
+                    time.sleep(12.0)
+                else:
+                    time.sleep((2 ** attempt) * 2)
                 continue
             raise e
 
@@ -335,33 +357,59 @@ async def classify_single_finger_safe(request: Request):
         raise HTTPException(status_code=400, detail="No fingerprint image data received.")
 
     try:
-        pattern_code, rc = classify_fingerprint_image_ai(
+        pattern_code, rc_left, rc_right = classify_fingerprint_image_ai(
             image_bytes=image_bytes,
             api_key=api_key,
             finger_code=finger_code
         )
 
         p_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", pattern_code)
-        is_whorl = pattern_code.startswith("W")
-        rc_left = rc if (is_whorl or pattern_code == "U") else 0
-        rc_right = rc if (is_whorl or pattern_code == "R") else 0
+        primary_rc = max(rc_left, rc_right)
 
+        # Full spectrum of JSON key mappings for frontend form compatibility
         result_payload = {
+            # Pattern representations
             "pattern": pattern_code,
             "pattern_type": pattern_code,
             "pattern_code": pattern_code,
+            "patternType": pattern_code,
+            "patternCode": pattern_code,
             "pattern_name": p_name,
             "name": p_name,
-            "ridge_count": rc,
-            "rc": rc,
+
+            # General/Primary Ridge Count
+            "ridge_count": primary_rc,
+            "ridgeCount": primary_rc,
+            "rc": primary_rc,
+
+            # Left Ridge Count variants
             "ridge_count_l": rc_left,
-            "ridge_count_r": rc_right,
+            "ridge_count_left": rc_left,
+            "ridgeCountL": rc_left,
+            "ridgeCountLeft": rc_left,
+            "rc_l": rc_left,
             "rc_left": rc_left,
-            "rc_right": rc_right,
+            "rcL": rc_left,
             "left_rc": rc_left,
-            "right_rc": rc_right
+            "leftRc": rc_left,
+            "left_ridge_count": rc_left,
+            "leftRidgeCount": rc_left,
+
+            # Right Ridge Count variants
+            "ridge_count_r": rc_right,
+            "ridge_count_right": rc_right,
+            "ridgeCountR": rc_right,
+            "ridgeCountRight": rc_right,
+            "rc_r": rc_right,
+            "rc_right": rc_right,
+            "rcR": rc_right,
+            "right_rc": rc_right,
+            "rightRc": rc_right,
+            "right_ridge_count": rc_right,
+            "rightRidgeCount": rc_right
         }
-        print(f"[Success] Detected {finger_code}: {pattern_code} (RC: {rc})")
+
+        print(f"[Success] Detected {finger_code}: {pattern_code} | RC(L): {rc_left}, RC(R): {rc_right}")
         return JSONResponse(content=result_payload)
 
     except Exception as e:
@@ -397,8 +445,8 @@ async def auto_scan_and_generate_report(
     for code, file_obj in uploads.items():
         try:
             image_bytes = await file_obj.read()
-            pattern_code, rc = classify_fingerprint_image_ai(image_bytes, effective_api_key, code)
-            finger_results[code] = {"pattern": pattern_code, "rc": rc}
+            pattern_code, rc_l, rc_r = classify_fingerprint_image_ai(image_bytes, effective_api_key, code)
+            finger_results[code] = {"pattern": pattern_code, "rc": max(rc_l, rc_r)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to analyze image for {code}: {str(e)}")
 
