@@ -52,7 +52,7 @@ DMIT_RULES = {
 }
 
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER WITH RETRY & LOGGING
+# 2. AUTOMATED VISION CLASSIFIER (GEMINI 3.6 FLASH)
 # ==============================================================================
 def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int]:
     client = genai.Client(api_key=api_key)
@@ -83,7 +83,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
         try:
             time.sleep(1.0)
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=[prompt, image],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -367,3 +367,45 @@ async def classify_single_finger_safe(request: Request):
     except Exception as e:
         print(f"[Classification Error]: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Classification error: {str(e)}")
+
+@app.post("/api/v1/auto-scan-and-generate-report")
+async def auto_scan_and_generate_report(
+    api_key: Optional[str] = Form(None, description="Your Google AI Studio Gemini API Key (or set via Render Env)"),
+    subject_id: str = Form("STUDENT_001", description="Subject/Client Name or ID"),
+    l1: UploadFile = File(..., description="Left Thumb Image"),
+    l2: UploadFile = File(..., description="Left Index Image"),
+    l3: UploadFile = File(..., description="Left Middle Image"),
+    l4: UploadFile = File(..., description="Left Ring Image"),
+    l5: UploadFile = File(..., description="Left Pinky Image"),
+    r1: UploadFile = File(..., description="Right Thumb Image"),
+    r2: UploadFile = File(..., description="Right Index Image"),
+    r3: UploadFile = File(..., description="Right Middle Image"),
+    r4: UploadFile = File(..., description="Right Ring Image"),
+    r5: UploadFile = File(..., description="Right Pinky Image"),
+):
+    effective_api_key = api_key or os.environ.get("GEMINI_API_KEY")
+    if not effective_api_key:
+        raise HTTPException(status_code=400, detail="Gemini API key is required.")
+
+    uploads = {
+        "L1": l1, "L2": l2, "L3": l3, "L4": l4, "L5": l5,
+        "R1": r1, "R2": r2, "R3": r3, "R4": r4, "R5": r5
+    }
+
+    finger_results = {}
+
+    for code, file_obj in uploads.items():
+        try:
+            image_bytes = await file_obj.read()
+            pattern_code, rc = classify_fingerprint_image_ai(image_bytes, effective_api_key, code)
+            finger_results[code] = {"pattern": pattern_code, "rc": rc}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to analyze image for {code}: {str(e)}")
+
+    pdf_bytes = compile_dmit_report(subject_id, finger_results)
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=DMIT_Report_{subject_id}.pdf"}
+    )
