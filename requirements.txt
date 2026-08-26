@@ -6,4 +6,3 @@ jinja2
 weasyprint
 matplotlib
 numpy
-opencv-python-headless
