@@ -1,4 +1,5 @@
 import io
+import time
 import math
 import base64
 from typing import Dict, List, Optional
@@ -51,9 +52,9 @@ class FingerprintDetectionResult(BaseModel):
     estimated_ridge_count: int = Field(description="Approximate number of ridges between core and delta (usually 0 for Arch, 8-22 for Loops/Whorls)")
 
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER (GEMINI 3.6 FLASH)
+# 2. AUTOMATED VISION CLASSIFIER WITH RETRY & BACKOFF
 # ==============================================================================
-def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str) -> tuple[str, int]:
+def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str, max_retries: int = 4) -> tuple[str, int]:
     client = genai.Client(api_key=api_key)
     image = Image.open(io.BytesIO(image_bytes))
 
@@ -75,22 +76,35 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
     2. Estimate the Ridge Count (RC) between the core center and delta point.
     """
 
-    response = client.models.generate_content(
-        model='gemini-3.6-flash',
-        contents=[prompt, image],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=FingerprintDetectionResult,
-            temperature=0.1
-        ),
-    )
+    for attempt in range(max_retries):
+        try:
+            # Stagger consecutive API requests to avoid burst limit thresholds
+            time.sleep(1.2)
 
-    result = FingerprintDetectionResult.model_validate_json(response.text)
-    code = result.pattern_code.upper().strip()
-    if code not in DMIT_RULES["patternDefinitions"]:
-        code = "U"
-    rc = max(result.estimated_ridge_count, 0)
-    return code, rc
+            response = client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=[prompt, image],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=FingerprintDetectionResult,
+                    temperature=0.1
+                ),
+            )
+
+            result = FingerprintDetectionResult.model_validate_json(response.text)
+            code = result.pattern_code.upper().strip()
+            if code not in DMIT_RULES["patternDefinitions"]:
+                code = "U"
+            rc = max(result.estimated_ridge_count, 0)
+            return code, rc
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # Exponential backoff pause: 2s, 4s, 8s
+                wait_time = (2 ** attempt) * 2
+                time.sleep(wait_time)
+                continue
+            raise e
 
 # ==============================================================================
 # 3. METRICS, CHARTS & PDF COMPILER
