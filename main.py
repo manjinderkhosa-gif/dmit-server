@@ -3,6 +3,7 @@ import os
 import time
 import math
 import base64
+import json
 from typing import Dict, List, Optional
 from PIL import Image
 import numpy as np
@@ -10,8 +11,8 @@ import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend for headless cloud servers
 import matplotlib.pyplot as plt
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Header
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Header, Request
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from jinja2 import Template
@@ -268,7 +269,6 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
 # ==============================================================================
 app = FastAPI(title="DMIT Automated AI Scanner API")
 
-# Enable CORS for external frontend connections
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -281,40 +281,82 @@ app.add_middleware(
 def root():
     return "<h2>DMIT Automated Vision API is Online</h2><p>Visit <a href='/docs'>/docs</a> to upload fingerprint photos.</p>"
 
-# 1. Health check for the "Test Connection" button
 @app.get("/classify")
 def test_classify_connection():
     return {"status": "ok", "message": "Classification service is reachable"}
 
-# 2. Single-finger auto-detect endpoint for the external profile builder
 @app.post("/classify")
-async def classify_single_finger(
-    file: UploadFile = File(...),
-    finger: Optional[str] = Form(None),
-    x_api_key: Optional[str] = Header(None)
-):
-    api_key = x_api_key or os.environ.get("GEMINI_API_KEY")
+async def classify_single_finger_flexible(request: Request):
+    api_key = request.headers.get("x-api-key") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=400, detail="Gemini API Key is required. Set it in Render Environment Variables.")
+        raise HTTPException(status_code=400, detail="Gemini API Key missing. Set GEMINI_API_KEY in Render Environment Variables.")
+
+    image_bytes = None
+    finger_code = "Unknown"
+
+    content_type = request.headers.get("content-type", "")
+
+    # 1. Multi-part form data (accepts any file/image field name)
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        for key, value in form.items():
+            if isinstance(value, UploadFile):
+                image_bytes = await value.read()
+            elif key in ["finger", "finger_code", "position", "id"]:
+                finger_code = str(value)
+
+    # 2. JSON payload (base64)
+    elif "application/json" in content_type:
+        body = await request.json()
+        finger_code = body.get("finger", body.get("finger_code", "Unknown"))
+        data_str = body.get("image") or body.get("file") or body.get("image_base64")
+        if data_str:
+            if "," in data_str:
+                data_str = data_str.split(",")[1]
+            image_bytes = base64.b64decode(data_str)
+
+    # 3. Direct binary image body
+    if not image_bytes:
+        raw_body = await request.body()
+        if len(raw_body) > 100:
+            image_bytes = raw_body
+
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="No fingerprint image data received in the request.")
 
     try:
-        image_bytes = await file.read()
         pattern_code, rc = classify_fingerprint_image_ai(
             image_bytes=image_bytes,
             api_key=api_key,
-            finger_code=finger or "Unknown"
+            finger_code=finger_code
         )
-        return {
-            "pattern": pattern_code,
-            "pattern_name": DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", pattern_code),
-            "ridge_count": rc,
-            "ridge_count_l": rc if pattern_code.startswith("W") else (rc if pattern_code == "U" else 0),
-            "ridge_count_r": rc if pattern_code.startswith("W") else (rc if pattern_code == "R" else 0)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
 
-# 3. 10-Finger batch scan and PDF generator
+        p_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", pattern_code)
+        
+        # Determine left and right ridge counts
+        is_whorl = pattern_code.startswith("W")
+        rc_left = rc if (is_whorl or pattern_code == "U") else 0
+        rc_right = rc if (is_whorl or pattern_code == "R") else 0
+
+        # Return comprehensive response covering typical key names
+        return JSONResponse(content={
+            "pattern": pattern_code,
+            "pattern_type": pattern_code,
+            "pattern_code": pattern_code,
+            "pattern_name": p_name,
+            "name": p_name,
+            "ridge_count": rc,
+            "rc": rc,
+            "ridge_count_l": rc_left,
+            "ridge_count_r": rc_right,
+            "rc_left": rc_left,
+            "rc_right": rc_right,
+            "left_rc": rc_left,
+            "right_rc": rc_right
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Classification error: {str(e)}")
+
 @app.post("/api/v1/auto-scan-and-generate-report")
 async def auto_scan_and_generate_report(
     api_key: Optional[str] = Form(None, description="Your Google AI Studio Gemini API Key (or set via Render Env)"),
