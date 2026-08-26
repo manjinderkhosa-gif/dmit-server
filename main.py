@@ -270,7 +270,6 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
 # ==============================================================================
 app = FastAPI(title="DMIT Automated AI Scanner API")
 
-# Broad CORS permissions for all headers and methods
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -300,6 +299,9 @@ async def classify_single_finger_safe(request: Request):
 
     image_bytes = None
     finger_code = "Unknown"
+
+    # Pre-cache raw bytes in memory so stream is never exhausted
+    body_bytes = await request.body()
     content_type = request.headers.get("content-type", "").lower()
 
     try:
@@ -314,7 +316,7 @@ async def classify_single_finger_safe(request: Request):
                     finger_code = str(val)
 
         elif "application/json" in content_type:
-            body_json = await request.json()
+            body_json = json.loads(body_bytes.decode("utf-8", errors="ignore") or "{}")
             finger_code = body_json.get("finger", body_json.get("finger_code", "Unknown"))
             data_str = body_json.get("image") or body_json.get("file") or body_json.get("image_base64")
             if data_str:
@@ -322,14 +324,11 @@ async def classify_single_finger_safe(request: Request):
                     data_str = data_str.split(",")[1]
                 image_bytes = base64.b64decode(data_str)
 
-        else:
-            # Direct binary fallback
-            raw_body = await request.body()
-            if len(raw_body) > 100:
-                image_bytes = raw_body
+        if not image_bytes and len(body_bytes) > 100:
+            image_bytes = body_bytes
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed reading upload payload: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed reading payload: {str(e)}")
 
     if not image_bytes:
         raise HTTPException(status_code=400, detail="No fingerprint image data received.")
