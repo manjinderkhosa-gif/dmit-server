@@ -6,3 +6,5 @@ jinja2
 weasyprint
 matplotlib
 numpy
+pillow
+google-genai
