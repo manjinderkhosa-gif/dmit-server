@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from PIL import Image
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # Non-interactive backend for headless cloud servers
 import matplotlib.pyplot as plt
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
@@ -51,7 +51,7 @@ class FingerprintDetectionResult(BaseModel):
     estimated_ridge_count: int = Field(description="Approximate number of ridges between core and delta (usually 0 for Arch, 8-22 for Loops/Whorls)")
 
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER
+# 2. AUTOMATED VISION CLASSIFIER (GEMINI 3.6 FLASH)
 # ==============================================================================
 def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str) -> tuple[str, int]:
     client = genai.Client(api_key=api_key)
@@ -76,7 +76,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
     """
 
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-3.6-flash',
         contents=[prompt, image],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -153,7 +153,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     vak_scores = {k: round((v / tot_vak) * 100, 1) for k, v in vak_rc.items()}
     dom_vak = max(vak_scores, key=vak_scores.get)
 
-    # Charts
+    # Radar Chart
     order = ["L1", "L2", "L3", "L4", "L5", "R5", "R4", "R3", "R2", "R1"]
     r_map = {item["finger"]: item["contribution_pct"] for item in rankings}
     vals = [r_map.get(k, 0) for k in order]
@@ -172,6 +172,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     plt.close(fig)
     radar_img = f"data:image/png;base64,{base64.b64encode(buf_radar.getvalue()).decode()}"
 
+    # Hemisphere Bar Chart
     fig2, ax2 = plt.subplots(figsize=(6, 1.2))
     ax2.barh(0, left_pct, color="#2B6CB0", height=0.6)
     ax2.barh(0, right_pct, left=left_pct, color="#805AD5", height=0.6)
