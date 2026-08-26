@@ -4,11 +4,12 @@ import time
 import math
 import base64
 import json
+import traceback
 from typing import Dict, List, Optional
 from PIL import Image
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend for headless cloud servers
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
@@ -50,60 +51,58 @@ DMIT_RULES = {
     }
 }
 
-class FingerprintDetectionResult(BaseModel):
-    pattern_code: str = Field(description="Must be one of: WT, WS, WD, WC, WP, U, R, A, AT")
-    estimated_ridge_count: int = Field(description="Approximate number of ridges between core and delta (usually 0 for Arch, 8-22 for Loops/Whorls)")
-
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER WITH RETRY & BACKOFF
+# 2. AUTOMATED VISION CLASSIFIER WITH RETRY & LOGGING
 # ==============================================================================
 def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int]:
     client = genai.Client(api_key=api_key)
-    image = Image.open(io.BytesIO(image_bytes))
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
     prompt = f"""
     You are an expert Dermatoglyphics and Fingerprint Classification specialist based on the BMD Counseling system.
     Analyze this fingerprint image for finger {finger_code}.
 
-    1. Classify the exact pattern into ONE of these codes:
-       - WT: Target Whorl / Concentric rings with 2 deltas
-       - WS: Spiral Whorl rotating outward with 2 deltas
-       - WD: Double loop / S-shape interlocking loops with 2 deltas
-       - WC: Composite Whorl
-       - WP: Peacock Eye (small center whorl inside a loop)
-       - U: Ulnar loop (curving toward pinky side, 1 delta)
-       - R: Radial loop (curving toward thumb side, 1 delta)
-       - A: Plain Arch (wave-like ridges, 0 deltas)
-       - AT: Tented Arch (sharp upward spike <90 deg, 0 deltas)
+    Classify the exact pattern into ONE of these codes:
+    - WT: Target Whorl (Concentric rings with 2 deltas)
+    - WS: Spiral Whorl (Spiral rotating outward with 2 deltas)
+    - WD: Double loop (S-shape interlocking loops with 2 deltas)
+    - WC: Composite Whorl
+    - WP: Peacock Eye (small center whorl inside a loop)
+    - U: Ulnar loop (curving toward pinky side, 1 delta)
+    - R: Radial loop (curving toward thumb side, 1 delta)
+    - A: Plain Arch (wave-like ridges, 0 deltas)
+    - AT: Tented Arch (sharp upward spike, 0 deltas)
 
-    2. Estimate the Ridge Count (RC) between the core center and delta point.
+    Also estimate the Ridge Count (RC) between the core center and delta point.
+
+    Return ONLY a JSON object formatted exactly as:
+    {{"pattern_code": "WT", "estimated_ridge_count": 14}}
     """
 
     for attempt in range(max_retries):
         try:
             time.sleep(1.0)
-
             response = client.models.generate_content(
-                model='gemini-3.6-flash',
+                model='gemini-2.5-flash',
                 contents=[prompt, image],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=FingerprintDetectionResult,
                     temperature=0.1
                 ),
             )
 
-            result = FingerprintDetectionResult.model_validate_json(response.text)
-            code = result.pattern_code.upper().strip()
+            raw_text = response.text.strip()
+            data = json.loads(raw_text)
+            code = str(data.get("pattern_code", "U")).upper().strip()
             if code not in DMIT_RULES["patternDefinitions"]:
                 code = "U"
-            rc = max(result.estimated_ridge_count, 0)
-            return code, rc
+            rc = int(data.get("estimated_ridge_count", 0))
+            return code, max(rc, 0)
 
         except Exception as e:
+            print(f"[Attempt {attempt+1}] Vision classification error: {str(e)}")
             if attempt < max_retries - 1:
-                wait_time = (2 ** attempt) * 2
-                time.sleep(wait_time)
+                time.sleep((2 ** attempt) * 2)
                 continue
             raise e
 
@@ -295,16 +294,16 @@ def test_classify_connection():
 async def classify_single_finger_safe(request: Request):
     api_key = request.headers.get("x-api-key") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
+        print("[Error] GEMINI_API_KEY is not set in Render Environment Variables.")
         raise HTTPException(status_code=400, detail="Gemini API Key missing. Set GEMINI_API_KEY in Render Environment Variables.")
 
     image_bytes = None
     finger_code = "Unknown"
 
-    # Pre-cache raw bytes in memory so stream is never exhausted
-    body_bytes = await request.body()
-    content_type = request.headers.get("content-type", "").lower()
-
     try:
+        body_bytes = await request.body()
+        content_type = request.headers.get("content-type", "").lower()
+
         if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
             form_data = await request.form()
             for key, val in form_data.items():
@@ -328,9 +327,11 @@ async def classify_single_finger_safe(request: Request):
             image_bytes = body_bytes
 
     except Exception as e:
+        print(f"[Error reading body]: {traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=f"Failed reading payload: {str(e)}")
 
     if not image_bytes:
+        print("[Error]: No image bytes found in request.")
         raise HTTPException(status_code=400, detail="No fingerprint image data received.")
 
     try:
@@ -345,7 +346,7 @@ async def classify_single_finger_safe(request: Request):
         rc_left = rc if (is_whorl or pattern_code == "U") else 0
         rc_right = rc if (is_whorl or pattern_code == "R") else 0
 
-        return JSONResponse(content={
+        result_payload = {
             "pattern": pattern_code,
             "pattern_type": pattern_code,
             "pattern_code": pattern_code,
@@ -359,48 +360,10 @@ async def classify_single_finger_safe(request: Request):
             "rc_right": rc_right,
             "left_rc": rc_left,
             "right_rc": rc_right
-        })
+        }
+        print(f"[Success] Detected {finger_code}: {pattern_code} (RC: {rc})")
+        return JSONResponse(content=result_payload)
+
     except Exception as e:
+        print(f"[Classification Error]: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Classification error: {str(e)}")
-
-@app.post("/api/v1/auto-scan-and-generate-report")
-async def auto_scan_and_generate_report(
-    api_key: Optional[str] = Form(None, description="Your Google AI Studio Gemini API Key (or set via Render Env)"),
-    subject_id: str = Form("STUDENT_001", description="Subject/Client Name or ID"),
-    l1: UploadFile = File(..., description="Left Thumb Image"),
-    l2: UploadFile = File(..., description="Left Index Image"),
-    l3: UploadFile = File(..., description="Left Middle Image"),
-    l4: UploadFile = File(..., description="Left Ring Image"),
-    l5: UploadFile = File(..., description="Left Pinky Image"),
-    r1: UploadFile = File(..., description="Right Thumb Image"),
-    r2: UploadFile = File(..., description="Right Index Image"),
-    r3: UploadFile = File(..., description="Right Middle Image"),
-    r4: UploadFile = File(..., description="Right Ring Image"),
-    r5: UploadFile = File(..., description="Right Pinky Image"),
-):
-    effective_api_key = api_key or os.environ.get("GEMINI_API_KEY")
-    if not effective_api_key:
-        raise HTTPException(status_code=400, detail="Gemini API key is required.")
-
-    uploads = {
-        "L1": l1, "L2": l2, "L3": l3, "L4": l4, "L5": l5,
-        "R1": r1, "R2": r2, "R3": r3, "R4": r4, "R5": r5
-    }
-
-    finger_results = {}
-
-    for code, file_obj in uploads.items():
-        try:
-            image_bytes = await file_obj.read()
-            pattern_code, rc = classify_fingerprint_image_ai(image_bytes, effective_api_key, code)
-            finger_results[code] = {"pattern": pattern_code, "rc": rc}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to analyze image for {code}: {str(e)}")
-
-    pdf_bytes = compile_dmit_report(subject_id, finger_results)
-
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=DMIT_Report_{subject_id}.pdf"}
-    )
