@@ -75,7 +75,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
        - If Arch (A, AT): Both counts are 0.
 
     Return ONLY a JSON object formatted exactly as:
-    {{"pattern_code": "WC", "ridge_count_left": 13, "ridge_count_right": 15}}
+    {{"pattern_code": "WT", "ridge_count_left": 14, "ridge_count_right": 15}}
     """
 
     for attempt in range(max_retries):
@@ -94,7 +94,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             data = json.loads(raw_text)
             code = str(data.get("pattern_code", "U")).upper().strip()
             
-            # Map alternate symbols to frontend values
+            # Normalize code to the exact dropdown values
             if code in ["WS", "PLAIN", "TARGET"]:
                 code = "WT"
             elif code in ["WD", "DOUBLE_LOOP", "COMPOSITE"]:
@@ -286,7 +286,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     return pdf_buf.getvalue()
 
 # ==============================================================================
-# 4. FASTAPI APP & ENDPOINTS
+# 4. FASTAPI APP & UNIVERSAL RESPONSE ROUTER
 # ==============================================================================
 app = FastAPI(title="DMIT Automated AI Scanner API")
 
@@ -361,20 +361,32 @@ async def classify_single_finger_safe(request: Request):
 
         display_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", "Ulnar Loop")
         primary_rc = max(rc_left, rc_right)
+        code_upper = pattern_code.upper()
+        code_lower = pattern_code.lower()
 
-        result_payload = {
-            # Exact option value attribute matches
-            "pattern": pattern_code,
-            "pattern_type": pattern_code,
-            "pattern_code": pattern_code,
-            "patternType": pattern_code,
-            "patternCode": pattern_code,
-            "code": pattern_code,
-            "value": pattern_code,
-            "type": pattern_code,
+        # Build base payload with all possible key and casing combinations
+        core_data = {
+            # Uppercase option value codes (WT, WC, WP, U, R, A, AT)
+            "pattern": code_upper,
+            "pattern_type": code_upper,
+            "pattern_code": code_upper,
+            "patternType": code_upper,
+            "patternCode": code_upper,
+            "code": code_upper,
+            "value": code_upper,
+            "type": code_upper,
+            "finger_pattern": code_upper,
+            "fingerPattern": code_upper,
+            "classification": code_upper,
+            "detected_pattern": code_upper,
 
-            # Display name representations
+            # Lowercase codes (wt, wc, wp, u, r, a, at)
+            "pattern_lower": code_lower,
+            "pattern_slug": code_lower,
+
+            # Display name labels
             "pattern_name": display_name,
+            "patternName": display_name,
             "name": display_name,
             "label": display_name,
 
@@ -406,7 +418,16 @@ async def classify_single_finger_safe(request: Request):
             "rightRidgeCount": rc_right
         }
 
-        print(f"[Success] Set {finger_code} to value='{pattern_code}' ({display_name}) | RC(L): {rc_left}, RC(R): {rc_right}")
+        # Provide flat root keys AND nested wrapper objects
+        result_payload = {
+            **core_data,
+            "data": core_data,
+            "result": core_data,
+            "prediction": core_data,
+            "fingerprint": core_data
+        }
+
+        print(f"[Success] Set {finger_code} -> value='{code_upper}' | RC(L): {rc_left}, RC(R): {rc_right}")
         return JSONResponse(content=result_payload)
 
     except Exception as e:
