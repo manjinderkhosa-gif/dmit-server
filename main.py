@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from PIL import Image
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")  # Headless server backend
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
@@ -23,7 +23,7 @@ from google.genai import types
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 # ==============================================================================
-# 1. BMD KNOWLEDGE BASE & APP UI OPTION MAPPINGS
+# 1. BMD KNOWLEDGE BASE & EXACT DROPDOWN MAPPING
 # ==============================================================================
 DMIT_RULES = {
     "fingerMappings": {
@@ -40,9 +40,7 @@ DMIT_RULES = {
     },
     "patternDefinitions": {
         "WT": {"name": "Target / Plain Whorl", "group": "Whorl", "learningStyle": "Self-Directed / Cognitive", "traits": ["Goal-oriented", "Decisive", "Strong willpower"]},
-        "WS": {"name": "Target / Plain Whorl", "group": "Whorl", "learningStyle": "Self-Directed / Cognitive", "traits": ["Ambitious", "Self-starter", "Curious"]},
-        "WD": {"name": "Double Loop / Composite Whorl", "group": "Whorl", "learningStyle": "Deliberate / Analytical", "traits": ["Multi-angle thinker", "Cautious", "Perfectionist"]},
-        "WC": {"name": "Double Loop / Composite Whorl", "group": "Whorl", "learningStyle": "Multi-Faceted Cognitive", "traits": ["Adaptable", "Complex problem solver"]},
+        "WC": {"name": "Double Loop / Composite Whorl", "group": "Whorl", "learningStyle": "Deliberate / Analytical", "traits": ["Multi-angle thinker", "Cautious", "Perfectionist"]},
         "WP": {"name": "Peacock's Eye", "group": "Whorl", "learningStyle": "Expressive / Creative", "traits": ["Influential", "Artistic", "Spontaneous"]},
         "U":  {"name": "Ulnar Loop", "group": "Loop", "learningStyle": "Imitative Learner", "traits": ["Sociable", "Flexible", "Team player"]},
         "R":  {"name": "Radial Loop", "group": "Loop", "learningStyle": "Reverse Thinker", "traits": ["Out of the box", "Critical thinker", "Innovative"]},
@@ -52,7 +50,7 @@ DMIT_RULES = {
 }
 
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER WITH 429 RATE LIMIT RECOVERY
+# 2. AUTOMATED VISION CLASSIFIER
 # ==============================================================================
 def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int, int]:
     client = genai.Client(api_key=api_key)
@@ -62,22 +60,22 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
     You are an expert Dermatoglyphics and Fingerprint Classification specialist based on the BMD Counseling system.
     Analyze this fingerprint image for finger position: {finger_code}.
 
-    1. Classify the pattern into ONE of the exact UI category codes:
-       - WT: Target / Plain Whorl (Concentric circles or spiral whorl with 2 deltas)
-       - WD: Double Loop / Composite Whorl (S-shape / interlocking loops with 2 deltas)
+    1. Classify the pattern into EXACTLY ONE of these valid system codes:
+       - WT: Target / Plain Whorl (Concentric rings or spiral whorl with 2 deltas)
+       - WC: Double Loop / Composite Whorl (S-shape / interlocking loops with 2 deltas)
        - WP: Peacock's Eye (Small center circular whorl inside a loop)
-       - U: Ulnar Loop (Flows towards the pinky side, 1 delta)
-       - R: Radial Loop (Flows towards the thumb side, 1 delta)
-       - A: Simple Arch (Gentle wave-like ridges, 0 deltas)
+       - U: Ulnar Loop (Flows towards pinky side, 1 delta)
+       - R: Radial Loop (Flows towards thumb side, 1 delta)
+       - A: Simple Arch (Wave-like ridges, 0 deltas)
        - AT: Tented Arch (Sharp upward spike <90 degrees, 0 deltas)
 
     2. Calculate Ridge Counts (RC):
-       - If Whorl: Provide left delta ridge count and right delta ridge count (usually 8-22).
-       - If Loop: Provide ridge count on the side with delta, the other side is 0.
-       - If Arch: Both counts are 0.
+       - If Whorl (WT, WC, WP): Provide left delta ridge count and right delta ridge count (usually 8-22).
+       - If Loop (U, R): Provide ridge count on the side with delta, the other side is 0.
+       - If Arch (A, AT): Both counts are 0.
 
     Return ONLY a JSON object formatted exactly as:
-    {{"pattern_code": "WT", "ridge_count_left": 14, "ridge_count_right": 16}}
+    {{"pattern_code": "WC", "ridge_count_left": 13, "ridge_count_right": 15}}
     """
 
     for attempt in range(max_retries):
@@ -95,15 +93,21 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             raw_text = response.text.strip()
             data = json.loads(raw_text)
             code = str(data.get("pattern_code", "U")).upper().strip()
-            if code not in DMIT_RULES["patternDefinitions"]:
+            
+            # Map alternate symbols to frontend values
+            if code in ["WS", "PLAIN", "TARGET"]:
+                code = "WT"
+            elif code in ["WD", "DOUBLE_LOOP", "COMPOSITE"]:
+                code = "WC"
+            elif code not in DMIT_RULES["patternDefinitions"]:
                 code = "U"
 
             rc_l = int(data.get("ridge_count_left", data.get("rc_left", 0)))
             rc_r = int(data.get("ridge_count_right", data.get("rc_right", 0)))
-            
+
             if rc_l == 0 and rc_r == 0:
                 est = int(data.get("estimated_ridge_count", data.get("ridge_count", 0)))
-                if code.startswith("W"):
+                if code in ["WT", "WC", "WP"]:
                     rc_l, rc_r = est, est
                 elif code == "U":
                     rc_l, rc_r = est, 0
@@ -117,7 +121,6 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             print(f"[Attempt {attempt+1}] Vision classification error: {err_msg}")
             if attempt < max_retries - 1:
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    print("Rate limit reached. Waiting 12 seconds before retry...")
                     time.sleep(12.0)
                 else:
                     time.sleep((2 ** attempt) * 2)
@@ -283,7 +286,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     return pdf_buf.getvalue()
 
 # ==============================================================================
-# 4. FASTAPI APP & FLEXIBLE CLASSIFICATION ROUTER
+# 4. FASTAPI APP & ENDPOINTS
 # ==============================================================================
 app = FastAPI(title="DMIT Automated AI Scanner API")
 
@@ -312,7 +315,6 @@ def test_classify_connection():
 async def classify_single_finger_safe(request: Request):
     api_key = request.headers.get("x-api-key") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print("[Error] GEMINI_API_KEY is not set in Render Environment Variables.")
         raise HTTPException(status_code=400, detail="Gemini API Key missing. Set GEMINI_API_KEY in Render Environment Variables.")
 
     image_bytes = None
@@ -345,11 +347,9 @@ async def classify_single_finger_safe(request: Request):
             image_bytes = body_bytes
 
     except Exception as e:
-        print(f"[Error reading body]: {traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=f"Failed reading payload: {str(e)}")
 
     if not image_bytes:
-        print("[Error]: No image bytes found in request.")
         raise HTTPException(status_code=400, detail="No fingerprint image data received.")
 
     try:
@@ -359,34 +359,29 @@ async def classify_single_finger_safe(request: Request):
             finger_code=finger_code
         )
 
-        ui_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", "Ulnar Loop")
+        display_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", "Ulnar Loop")
         primary_rc = max(rc_left, rc_right)
 
         result_payload = {
-            # Exact UI option text
-            "pattern": ui_name,
-            "pattern_type": ui_name,
-            "pattern_code": ui_name,
-            "patternType": ui_name,
-            "patternCode": ui_name,
-            "pattern_name": ui_name,
-            "patternName": ui_name,
-            "name": ui_name,
-            "label": ui_name,
-            "value": ui_name,
-            "type": ui_name,
-
-            # Standard Short Code fallbacks
+            # Exact option value attribute matches
+            "pattern": pattern_code,
+            "pattern_type": pattern_code,
+            "pattern_code": pattern_code,
+            "patternType": pattern_code,
+            "patternCode": pattern_code,
             "code": pattern_code,
-            "short_code": pattern_code,
-            "shortCode": pattern_code,
+            "value": pattern_code,
+            "type": pattern_code,
 
-            # Primary Ridge Count
+            # Display name representations
+            "pattern_name": display_name,
+            "name": display_name,
+            "label": display_name,
+
+            # Ridge counts
             "ridge_count": primary_rc,
             "ridgeCount": primary_rc,
             "rc": primary_rc,
-
-            # Left Ridge Count
             "ridge_count_l": rc_left,
             "ridge_count_left": rc_left,
             "ridgeCountL": rc_left,
@@ -398,8 +393,6 @@ async def classify_single_finger_safe(request: Request):
             "leftRc": rc_left,
             "left_ridge_count": rc_left,
             "leftRidgeCount": rc_left,
-
-            # Right Ridge Count
             "ridge_count_r": rc_right,
             "ridge_count_right": rc_right,
             "ridgeCountR": rc_right,
@@ -413,7 +406,7 @@ async def classify_single_finger_safe(request: Request):
             "rightRidgeCount": rc_right
         }
 
-        print(f"[Success] Detected {finger_code}: {ui_name} ({pattern_code}) | RC(L): {rc_left}, RC(R): {rc_right}")
+        print(f"[Success] Set {finger_code} to value='{pattern_code}' ({display_name}) | RC(L): {rc_left}, RC(R): {rc_right}")
         return JSONResponse(content=result_payload)
 
     except Exception as e:
