@@ -23,7 +23,7 @@ from google.genai import types
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 # ==============================================================================
-# 1. BMD KNOWLEDGE BASE CONFIGURATION
+# 1. BMD KNOWLEDGE BASE & APP UI OPTION MAPPINGS
 # ==============================================================================
 DMIT_RULES = {
     "fingerMappings": {
@@ -39,20 +39,20 @@ DMIT_RULES = {
         "R5": {"fingerName": "Right Pinky", "brainHemisphere": "Left", "brainLobe": "Occipital Lobe", "primaryIntelligence": "Visual-Observation Intelligence"}
     },
     "patternDefinitions": {
-        "WT": {"name": "Target Whorl", "group": "Whorl", "learningStyle": "Self-Directed / Cognitive", "traits": ["Goal-oriented", "Decisive", "Strong willpower"]},
-        "WS": {"name": "Spiral Whorl", "group": "Whorl", "learningStyle": "Self-Directed / Cognitive", "traits": ["Ambitious", "Self-starter", "Curious"]},
-        "WD": {"name": "Double Loop", "group": "Whorl", "learningStyle": "Deliberate / Analytical", "traits": ["Multi-angle thinker", "Cautious", "Perfectionist"]},
-        "WC": {"name": "Composite", "group": "Whorl", "learningStyle": "Multi-Faceted Cognitive", "traits": ["Adaptable", "Complex problem solver"]},
-        "WP": {"name": "Peacock Eye", "group": "Whorl", "learningStyle": "Expressive / Creative", "traits": ["Influential", "Artistic", "Spontaneous"]},
+        "WT": {"name": "Target / Plain Whorl", "group": "Whorl", "learningStyle": "Self-Directed / Cognitive", "traits": ["Goal-oriented", "Decisive", "Strong willpower"]},
+        "WS": {"name": "Target / Plain Whorl", "group": "Whorl", "learningStyle": "Self-Directed / Cognitive", "traits": ["Ambitious", "Self-starter", "Curious"]},
+        "WD": {"name": "Double Loop / Composite Whorl", "group": "Whorl", "learningStyle": "Deliberate / Analytical", "traits": ["Multi-angle thinker", "Cautious", "Perfectionist"]},
+        "WC": {"name": "Double Loop / Composite Whorl", "group": "Whorl", "learningStyle": "Multi-Faceted Cognitive", "traits": ["Adaptable", "Complex problem solver"]},
+        "WP": {"name": "Peacock's Eye", "group": "Whorl", "learningStyle": "Expressive / Creative", "traits": ["Influential", "Artistic", "Spontaneous"]},
         "U":  {"name": "Ulnar Loop", "group": "Loop", "learningStyle": "Imitative Learner", "traits": ["Sociable", "Flexible", "Team player"]},
         "R":  {"name": "Radial Loop", "group": "Loop", "learningStyle": "Reverse Thinker", "traits": ["Out of the box", "Critical thinker", "Innovative"]},
-        "A":  {"name": "Plain Arch", "group": "Arch", "learningStyle": "Open Learning (Sponge)", "traits": ["Absorptive", "Methodical", "Needs encouragement"]},
+        "A":  {"name": "Simple Arch", "group": "Arch", "learningStyle": "Open Learning (Sponge)", "traits": ["Absorptive", "Methodical", "Needs encouragement"]},
         "AT": {"name": "Tented Arch", "group": "Arch", "learningStyle": "Impulsive / High Energy", "traits": ["Enthusiastic", "Fast learner", "Emotionally engaged"]}
     }
 }
 
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER WITH RETRY & 429 RECOVERY
+# 2. AUTOMATED VISION CLASSIFIER WITH 429 RATE LIMIT RECOVERY
 # ==============================================================================
 def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int, int]:
     client = genai.Client(api_key=api_key)
@@ -62,22 +62,19 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
     You are an expert Dermatoglyphics and Fingerprint Classification specialist based on the BMD Counseling system.
     Analyze this fingerprint image for finger position: {finger_code}.
 
-    1. Classify the exact pattern into ONE of these codes:
-       - WT: Target Whorl (Concentric rings with 2 deltas)
-       - WS: Spiral Whorl (Spiral rotating outward with 2 deltas)
-       - WD: Double loop (S-shape interlocking loops with 2 deltas)
-       - WC: Composite Whorl
-       - WP: Peacock Eye (small center whorl inside a loop)
-       - U: Ulnar loop (curving toward pinky side, 1 delta)
-       - R: Radial loop (curving toward thumb side, 1 delta)
-       - A: Plain Arch (wave-like ridges, 0 deltas)
-       - AT: Tented Arch (sharp upward spike, 0 deltas)
+    1. Classify the pattern into ONE of the exact UI category codes:
+       - WT: Target / Plain Whorl (Concentric circles or spiral whorl with 2 deltas)
+       - WD: Double Loop / Composite Whorl (S-shape / interlocking loops with 2 deltas)
+       - WP: Peacock's Eye (Small center circular whorl inside a loop)
+       - U: Ulnar Loop (Flows towards the pinky side, 1 delta)
+       - R: Radial Loop (Flows towards the thumb side, 1 delta)
+       - A: Simple Arch (Gentle wave-like ridges, 0 deltas)
+       - AT: Tented Arch (Sharp upward spike <90 degrees, 0 deltas)
 
-    2. Calculate the Ridge Counts (RC):
-       - If Whorl (WT, WS, WD, WC, WP): Provide left delta ridge count and right delta ridge count (usually 8-22).
-       - If Ulnar Loop (U): Ridge count is on the left or right depending on flow, the other is 0.
-       - If Radial Loop (R): Ridge count is on the thumb side, the other is 0.
-       - If Arch (A, AT): Both counts are 0.
+    2. Calculate Ridge Counts (RC):
+       - If Whorl: Provide left delta ridge count and right delta ridge count (usually 8-22).
+       - If Loop: Provide ridge count on the side with delta, the other side is 0.
+       - If Arch: Both counts are 0.
 
     Return ONLY a JSON object formatted exactly as:
     {{"pattern_code": "WT", "ridge_count_left": 14, "ridge_count_right": 16}}
@@ -104,7 +101,6 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             rc_l = int(data.get("ridge_count_left", data.get("rc_left", 0)))
             rc_r = int(data.get("ridge_count_right", data.get("rc_right", 0)))
             
-            # If total ridge count was returned instead, split appropriately
             if rc_l == 0 and rc_r == 0:
                 est = int(data.get("estimated_ridge_count", data.get("ridge_count", 0)))
                 if code.startswith("W"):
@@ -121,7 +117,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             print(f"[Attempt {attempt+1}] Vision classification error: {err_msg}")
             if attempt < max_retries - 1:
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    print("Quota rate limit reached. Backing off for 12 seconds...")
+                    print("Rate limit reached. Waiting 12 seconds before retry...")
                     time.sleep(12.0)
                 else:
                     time.sleep((2 ** attempt) * 2)
@@ -287,7 +283,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     return pdf_buf.getvalue()
 
 # ==============================================================================
-# 4. FASTAPI APP & ENDPOINTS
+# 4. FASTAPI APP & FLEXIBLE CLASSIFICATION ROUTER
 # ==============================================================================
 app = FastAPI(title="DMIT Automated AI Scanner API")
 
@@ -363,26 +359,34 @@ async def classify_single_finger_safe(request: Request):
             finger_code=finger_code
         )
 
-        p_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", pattern_code)
+        ui_name = DMIT_RULES["patternDefinitions"].get(pattern_code, {}).get("name", "Ulnar Loop")
         primary_rc = max(rc_left, rc_right)
 
-        # Full spectrum of JSON key mappings for frontend form compatibility
         result_payload = {
-            # Pattern representations
-            "pattern": pattern_code,
-            "pattern_type": pattern_code,
-            "pattern_code": pattern_code,
-            "patternType": pattern_code,
-            "patternCode": pattern_code,
-            "pattern_name": p_name,
-            "name": p_name,
+            # Exact UI option text
+            "pattern": ui_name,
+            "pattern_type": ui_name,
+            "pattern_code": ui_name,
+            "patternType": ui_name,
+            "patternCode": ui_name,
+            "pattern_name": ui_name,
+            "patternName": ui_name,
+            "name": ui_name,
+            "label": ui_name,
+            "value": ui_name,
+            "type": ui_name,
 
-            # General/Primary Ridge Count
+            # Standard Short Code fallbacks
+            "code": pattern_code,
+            "short_code": pattern_code,
+            "shortCode": pattern_code,
+
+            # Primary Ridge Count
             "ridge_count": primary_rc,
             "ridgeCount": primary_rc,
             "rc": primary_rc,
 
-            # Left Ridge Count variants
+            # Left Ridge Count
             "ridge_count_l": rc_left,
             "ridge_count_left": rc_left,
             "ridgeCountL": rc_left,
@@ -395,7 +399,7 @@ async def classify_single_finger_safe(request: Request):
             "left_ridge_count": rc_left,
             "leftRidgeCount": rc_left,
 
-            # Right Ridge Count variants
+            # Right Ridge Count
             "ridge_count_r": rc_right,
             "ridge_count_right": rc_right,
             "ridgeCountR": rc_right,
@@ -409,7 +413,7 @@ async def classify_single_finger_safe(request: Request):
             "rightRidgeCount": rc_right
         }
 
-        print(f"[Success] Detected {finger_code}: {pattern_code} | RC(L): {rc_left}, RC(R): {rc_right}")
+        print(f"[Success] Detected {finger_code}: {ui_name} ({pattern_code}) | RC(L): {rc_left}, RC(R): {rc_right}")
         return JSONResponse(content=result_payload)
 
     except Exception as e:
