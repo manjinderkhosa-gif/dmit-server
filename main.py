@@ -6,7 +6,7 @@ import base64
 import json
 import traceback
 from typing import Dict, List, Optional
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -23,129 +23,138 @@ from google.genai import types
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 # ==============================================================================
-# 1. BMD KNOWLEDGE BASE & EXACT DROPDOWN MAPPING
+# 1. BMD KNOWLEDGE BASE & EXACT FORMULA DEFINITIONS
 # ==============================================================================
 DMIT_RULES = {
     "fingerMappings": {
         "L1": {"fingerName": "Left Thumb", "brainHemisphere": "Right", "brainLobe": "Prefrontal Lobe", "primaryIntelligence": "Interpersonal Intelligence"},
         "R1": {"fingerName": "Right Thumb", "brainHemisphere": "Left", "brainLobe": "Prefrontal Lobe", "primaryIntelligence": "Intrapersonal Intelligence"},
         "L2": {"fingerName": "Left Index", "brainHemisphere": "Right", "brainLobe": "Frontal Lobe", "primaryIntelligence": "Spatial Intelligence"},
-        "R2": {"fingerName": "Right Index", "brainHemisphere": "Left", "brainLobe": "Frontal Lobe", "primaryIntelligence": "Logical-Mathematical Intelligence"},
-        "L3": {"fingerName": "Left Middle", "brainHemisphere": "Right", "brainLobe": "Parietal Lobe", "primaryIntelligence": "Kinesthetic Intelligence (Gross Motor)"},
-        "R3": {"fingerName": "Right Middle", "brainHemisphere": "Left", "brainLobe": "Parietal Lobe", "primaryIntelligence": "Kinesthetic Intelligence (Fine Motor)"},
+        "R2": {"fingerName": "Right Index", "brainHemisphere": "Left", "brainLobe": "Frontal Lobe", "primaryIntelligence": "Logical Intelligence"},
+        "L3": {"fingerName": "Left Middle", "brainHemisphere": "Right", "brainLobe": "Parietal Lobe", "primaryIntelligence": "Kinesthetic Intelligence"},
+        "R3": {"fingerName": "Right Middle", "brainHemisphere": "Left", "brainLobe": "Parietal Lobe", "primaryIntelligence": "Kinesthetic Intelligence"},
         "L4": {"fingerName": "Left Ring", "brainHemisphere": "Right", "brainLobe": "Temporal Lobe", "primaryIntelligence": "Musical Intelligence"},
         "R4": {"fingerName": "Right Ring", "brainHemisphere": "Left", "brainLobe": "Temporal Lobe", "primaryIntelligence": "Linguistic Intelligence"},
-        "L5": {"fingerName": "Left Pinky", "brainHemisphere": "Right", "brainLobe": "Occipital Lobe", "primaryIntelligence": "Visual-Aesthetic Intelligence"},
-        "R5": {"fingerName": "Right Pinky", "brainHemisphere": "Left", "brainLobe": "Occipital Lobe", "primaryIntelligence": "Visual-Observation Intelligence"}
+        "L5": {"fingerName": "Left Pinky", "brainHemisphere": "Right", "brainLobe": "Occipital Lobe", "primaryIntelligence": "Visual Intelligence"},
+        "R5": {"fingerName": "Right Pinky", "brainHemisphere": "Left", "brainLobe": "Occipital Lobe", "primaryIntelligence": "Naturalistic Intelligence"}
     },
     "patternDefinitions": {
-        "WT": {"name": "Target / Plain Whorl", "group": "Whorl", "learningStyle": "Self-Directed / Cognitive", "traits": ["Goal-oriented", "Decisive", "Strong willpower"]},
-        "WC": {"name": "Double Loop / Composite Whorl", "group": "Whorl", "learningStyle": "Deliberate / Analytical", "traits": ["Multi-angle thinker", "Cautious", "Perfectionist"]},
-        "WP": {"name": "Peacock's Eye", "group": "Whorl", "learningStyle": "Expressive / Creative", "traits": ["Influential", "Artistic", "Spontaneous"]},
-        "U":  {"name": "Ulnar Loop", "group": "Loop", "learningStyle": "Imitative Learner", "traits": ["Sociable", "Flexible", "Team player"]},
-        "R":  {"name": "Radial Loop", "group": "Loop", "learningStyle": "Reverse Thinker", "traits": ["Out of the box", "Critical thinker", "Innovative"]},
-        "A":  {"name": "Simple Arch", "group": "Arch", "learningStyle": "Open Learning (Sponge)", "traits": ["Absorptive", "Methodical", "Needs encouragement"]},
-        "AT": {"name": "Tented Arch", "group": "Arch", "learningStyle": "Impulsive / High Energy", "traits": ["Enthusiastic", "Fast learner", "Emotionally engaged"]}
+        "WT": {"name": "Target / Plain Whorl", "group": "Whorl", "learningStyle": "Cognitive", "traits": ["Goal-driven", "High concentration", "Decisive"]},
+        "WC": {"name": "Double Loop / Composite Whorl", "group": "Whorl", "learningStyle": "Cognitive", "traits": ["Multi-perspective", "Adaptable negotiator", "Analytical"]},
+        "WP": {"name": "Peacock's Eye", "group": "Whorl", "learningStyle": "Cognitive", "traits": ["Artistic flair", "Intuitive perception", "Refined leadership"]},
+        "U":  {"name": "Ulnar Loop", "group": "Loop", "learningStyle": "Imitative", "traits": ["Cooperative", "Environment-absorbent", "Empathetic team worker"]},
+        "R":  {"name": "Radial Loop", "group": "Loop", "learningStyle": "Reverse Thinking", "traits": ["Unconventional thinker", "Critical inquiry", "Independent logic"]},
+        "A":  {"name": "Simple Arch", "group": "Arch", "learningStyle": "Open Learning", "traits": ["Absorptive sponge", "Methodical", "Step-by-step learner"]},
+        "AT": {"name": "Tented Arch", "group": "Arch", "learningStyle": "Open Learning", "traits": ["Enthusiastic", "High energy", "Fast burst learner"]}
     }
 }
 
 # ==============================================================================
-# 2. AUTOMATED VISION CLASSIFIER
+# 2. IMAGE PREPROCESSING (CONTRAST & RIDGE SHARPENING)
 # ==============================================================================
-def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 2) -> tuple[str, int, int]:
+def preprocess_fingerprint_image(image_bytes: bytes) -> Image.Image:
+    """Enhance micro-ridge visibility and delta contrast before sending to AI."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("L")
+    enhancer = ImageEnhance.Contrast(img)
+    img_contrasted = enhancer.enhance(2.2)
+    img_sharpened = img_contrasted.filter(ImageFilter.SHARPEN)
+    return img_sharpened.convert("RGB")
+
+# ==============================================================================
+# 3. HIGH-PRECISION VISION CLASSIFIER & RIDGE COUNTER
+# ==============================================================================
+def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int, int]:
     client = genai.Client(api_key=api_key)
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    processed_image = preprocess_fingerprint_image(image_bytes)
+
+    is_left_hand = finger_code.upper().startswith("L") or "LEFT" in finger_code.upper()
 
     prompt = f"""
-    You are an expert Dermatoglyphics and Fingerprint Classification specialist based on the BMD Counseling system.
-    Analyze this fingerprint image for finger position: {finger_code}.
+    You are an expert Forensic Dermatoglyphics and Henry Classification specialist analyzing this fingerprint image for position: {finger_code}.
 
-    1. Classify the pattern into EXACTLY ONE of these valid system codes:
-       - WT: Target / Plain Whorl (Concentric rings or spiral whorl with 2 deltas)
-       - WC: Double Loop / Composite Whorl (S-shape / interlocking loops with 2 deltas)
-       - WP: Peacock's Eye (Small center circular whorl inside a loop)
-       - U: Ulnar Loop (Flows towards pinky side, 1 delta)
-       - R: Radial Loop (Flows towards thumb side, 1 delta)
-       - A: Simple Arch (Wave-like ridges, 0 deltas)
-       - AT: Tented Arch (Sharp upward spike <90 degrees, 0 deltas)
+    ANALYTICAL PROCEDURE:
+    1. LOCATE ANATOMICAL LANDMARKS:
+       - Find the CORE (center loop crest, spiral vortex, or central ring).
+       - Find the DELTA(S) (triangular triradius forks where ridges diverge).
 
-    2. Calculate Ridge Counts (RC):
-       - If Whorl (WT, WC, WP): Provide left delta ridge count and right delta ridge count (usually 8-22).
-       - If Loop (U, R): Provide ridge count on the side with delta, the other side is 0.
-       - If Arch (A, AT): Both counts are 0.
+    2. CLASSIFY PATTERN CODE:
+       - WHORL (2 Deltas present):
+         * WP: Peacock's Eye (Small circle/eye nestled inside a loop).
+         * WT: Target / Plain Whorl (Concentric rings or continuous spiral).
+         * WC: Double Loop / Composite (Two distinct interlocking loops / S-shape).
+       - LOOP (1 Delta present, 180° core recurve):
+         * Hand context: This is the {'LEFT' if is_left_hand else 'RIGHT'} Hand.
+         * For Left Hand: Ridges opening to the right (pinky side) = 'U' (Ulnar Loop); opening to the left (thumb side) = 'R' (Radial Loop).
+         * For Right Hand: Ridges opening to the left (pinky side) = 'U' (Ulnar Loop); opening to the right (thumb side) = 'R' (Radial Loop).
+       - ARCH (0 Deltas present):
+         * A: Simple Arch (Wave-like ridges across print).
+         * AT: Tented Arch (Sharp upward tent spike < 90°).
 
-    Return ONLY a JSON object formatted exactly as:
-    {{"pattern_code": "WT", "ridge_count_left": 14, "ridge_count_right": 15}}
+    3. PRECISION RIDGE COUNTING (RC):
+       - Count every single friction ridge line crossing the straight vector from Core to Delta.
+       - Include fine micro-ridges near the delta junction (typical loop/whorl counts range between 14 and 22).
+       - For Whorls (WT, WC, WP): Provide left delta count and right delta count.
+       - For Loops (U, R): Provide the count for the side with delta; the other side MUST be 0.
+       - For Arches (A, AT): Both counts MUST be 0.
+
+    Return ONLY a JSON object:
+    {{"pattern_code": "WT", "ridge_count_left": 16, "ridge_count_right": 17}}
     """
 
-    overall_start = time.time()
-
     for attempt in range(max_retries):
-        attempt_start = time.time()
         try:
+            time.sleep(1.0)
             response = client.models.generate_content(
-                model='gemini-3.5-flash',  # corrected from 'gemini-3.6-flash'
-                contents=[prompt, image],
+                model='gemini-3.6-flash',
+                contents=[prompt, processed_image],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    temperature=0.1
+                    temperature=0.0
                 ),
             )
-            elapsed = time.time() - attempt_start
-            print(f"[{finger_code}] Gemini call succeeded on attempt {attempt+1} in {elapsed:.2f}s")
 
             raw_text = response.text.strip()
             data = json.loads(raw_text)
             code = str(data.get("pattern_code", "U")).upper().strip()
 
             if code in ["WS", "PLAIN", "TARGET"]:
-                code = "WT"
-            elif code in ["WD", "DOUBLE_LOOP", "COMPOSITE"]:
-                code = "WC"
-            elif code not in DMIT_RULES["patternDefinitions"]:
-                code = "U"
+                ui_pattern = "WT"
+            elif code == "WP":
+                ui_pattern = "WP"
+            elif code in ["WC", "WD", "DOUBLE_LOOP", "COMPOSITE"]:
+                ui_pattern = "WC"
+            elif code in ["U", "R", "A", "AT"]:
+                ui_pattern = code
+            else:
+                ui_pattern = "U"
 
             rc_l = int(data.get("ridge_count_left", data.get("rc_left", 0)))
             rc_r = int(data.get("ridge_count_right", data.get("rc_right", 0)))
 
-            if rc_l == 0 and rc_r == 0:
-                est = int(data.get("estimated_ridge_count", data.get("ridge_count", 0)))
-                if code in ["WT", "WC", "WP"]:
-                    rc_l, rc_r = est, est
-                elif code == "U":
-                    rc_l, rc_r = est, 0
-                elif code == "R":
-                    rc_l, rc_r = 0, est
+            if ui_pattern in ["A", "AT"]:
+                rc_l, rc_r = 0, 0
+            elif ui_pattern in ["WT", "WC", "WP"]:
+                if rc_l == 0 and rc_r > 0: rc_l = rc_r
+                if rc_r == 0 and rc_l > 0: rc_r = rc_l
 
-            total_elapsed = time.time() - overall_start
-            print(f"[{finger_code}] Total classify time: {total_elapsed:.2f}s")
-            return code, max(rc_l, 0), max(rc_r, 0)
+            return ui_pattern, max(rc_l, 0), max(rc_r, 0)
 
         except Exception as e:
-            elapsed = time.time() - attempt_start
             err_msg = str(e)
-            print(f"[{finger_code}] Attempt {attempt+1} FAILED after {elapsed:.2f}s: {err_msg}")
+            print(f"[Attempt {attempt+1}] Vision error for {finger_code}: {err_msg}")
             if attempt < max_retries - 1:
-                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                    print(f"[{finger_code}] Rate limited - waiting 12s before retry")
-                    time.sleep(12.0)
-                else:
-                    print(f"[{finger_code}] Retrying in 2s")
-                    time.sleep(2.0)
+                time.sleep(12.0 if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) else 2.0)
                 continue
-            total_elapsed = time.time() - overall_start
-            print(f"[{finger_code}] All {max_retries} attempts failed. Total time: {total_elapsed:.2f}s")
             raise e
 
 # ==============================================================================
-# 3. METRICS, CHARTS & PDF COMPILER
+# 4. BMD METRICS, CHARTS & PDF COMPILER
 # ==============================================================================
 def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     tfrc = sum(f["rc"] for f in finger_results.values())
     safe_tfrc = max(tfrc, 1)
 
     breakdown = []
-    rankings = []
     left_brain_rc, right_brain_rc = 0, 0
     vak_rc = {"Visual": 0, "Auditory": 0, "Kinesthetic": 0}
 
@@ -180,14 +189,25 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
             "personality_traits": p_def["traits"]
         })
 
-        rankings.append({
-            "finger": code,
-            "intelligence": mapping["primaryIntelligence"],
-            "lobe": mapping["brainLobe"],
-            "contribution_pct": pct
-        })
+    # BMD 4 Core Quotients
+    r1_rc = finger_results.get("R1", {}).get("rc", 0)
+    l1_rc = finger_results.get("L1", {}).get("rc", 0)
+    r4_rc = finger_results.get("R4", {}).get("rc", 0)
+    r2_rc = finger_results.get("R2", {}).get("rc", 0)
+    l2_rc = finger_results.get("L2", {}).get("rc", 0)
+    l4_rc = finger_results.get("L4", {}).get("rc", 0)
+    l3_rc = finger_results.get("L3", {}).get("rc", 0)
+    r3_rc = finger_results.get("R3", {}).get("rc", 0)
+    r5_rc = finger_results.get("R5", {}).get("rc", 0)
 
-    rankings = sorted(rankings, key=lambda x: x["contribution_pct"], reverse=True)
+    quotients = {
+        "EQ": r1_rc + l1_rc,
+        "IQ": r4_rc + r2_rc,
+        "CQ": l2_rc + l4_rc,
+        "AQ": l3_rc + r3_rc + r5_rc
+    }
+    q_sum = max(sum(quotients.values()), 1)
+    q_pcts = {k: round((v / q_sum) * 100, 1) for k, v in quotients.items()}
 
     tot_hemi = max(left_brain_rc + right_brain_rc, 1)
     left_pct = round((left_brain_rc / tot_hemi) * 100, 1)
@@ -199,7 +219,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     dom_vak = max(vak_scores, key=vak_scores.get)
 
     order = ["L1", "L2", "L3", "L4", "L5", "R5", "R4", "R3", "R2", "R1"]
-    r_map = {item["finger"]: item["contribution_pct"] for item in rankings}
+    r_map = {item["finger_code"]: item["contribution_percentage"] for item in breakdown}
     vals = [r_map.get(k, 0) for k in order]
     angles = np.linspace(0, 2 * np.pi, len(order), endpoint=False).tolist()
     vals += [vals[0]]
@@ -244,7 +264,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     </style></head>
     <body>
       <div class="header">
-        <h1>DMIT Automated AI Analysis Report</h1>
+        <h1>DMIT Assessment Report (BMD Standard)</h1>
         <p style="margin:0; color:#4A5568;">Subject ID: <strong>{{ subject_id }}</strong> | Total Ridge Count (TFRC): <strong>{{ tfrc }}</strong></p>
       </div>
 
@@ -260,17 +280,18 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <div style="width: 48%; text-align: center;"><img src="{{ radar_img }}" style="width: 100%; max-width: 250px;" /></div>
         <div style="width: 48%;">
-          <strong>Top Innate Intelligences:</strong>
+          <strong>Four Core Quotients:</strong>
           <table>
-            <tr><th>Rank</th><th>Intelligence</th><th>Score %</th></tr>
-            {% for item in rankings[:5] %}
-            <tr><td>#{{ loop.index }}</td><td>{{ item.intelligence }}</td><td>{{ item.contribution_pct }}%</td></tr>
-            {% endfor %}
+            <tr><th>Quotient</th><th>Score %</th></tr>
+            <tr><td>EQ (Emotional)</td><td>{{ q_pcts['EQ'] }}%</td></tr>
+            <tr><td>IQ (Intelligence)</td><td>{{ q_pcts['IQ'] }}%</td></tr>
+            <tr><td>CQ (Creative)</td><td>{{ q_pcts['CQ'] }}%</td></tr>
+            <tr><td>AQ (Adversity)</td><td>{{ q_pcts['AQ'] }}%</td></tr>
           </table>
         </div>
       </div>
 
-      <h3 style="color: #2C5282; margin-top: 15px; margin-bottom: 4px;">AI-Detected 10-Finger Pattern Breakdown</h3>
+      <h3 style="color: #2C5282; margin-top: 15px; margin-bottom: 4px;">10-Finger Dermatoglyphic Breakdown</h3>
       <table>
         <tr><th>Code</th><th>Finger</th><th>Detected Pattern</th><th>RC</th><th>Learning Style</th><th>Traits</th></tr>
         {% for f in breakdown %}
@@ -288,7 +309,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     """
     rendered = Template(html_template).render(
         subject_id=subject_id, tfrc=tfrc, dominance=dominance,
-        dom_vak=dom_vak, vak_scores=vak_scores, rankings=rankings,
+        dom_vak=dom_vak, vak_scores=vak_scores, q_pcts=q_pcts,
         breakdown=breakdown, radar_img=radar_img, hemi_img=hemi_img
     )
     pdf_buf = io.BytesIO()
@@ -296,9 +317,9 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     return pdf_buf.getvalue()
 
 # ==============================================================================
-# 4. FASTAPI APP & UNIVERSAL RESPONSE ROUTER
+# 5. FASTAPI APP & ENDPOINTS
 # ==============================================================================
-app = FastAPI(title="DMIT Automated AI Scanner API")
+app = FastAPI(title="DMIT Automated Vision API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -310,7 +331,7 @@ app.add_middleware(
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    return "<h2>DMIT Automated Vision API is Online</h2><p>Visit <a href='/docs'>/docs</a> to upload fingerprint photos.</p>"
+    return "<h2>DMIT Automated Vision API is Online</h2><p>Visit <a href='/docs'>/docs</a> to view endpoints.</p>"
 
 @app.head("/")
 def head_root():
@@ -318,14 +339,14 @@ def head_root():
 
 @app.get("/classify")
 def test_classify_connection():
-    return JSONResponse(content={"status": "ok", "message": "Classification service is reachable"})
+    return JSONResponse(content={"status": "ok", "message": "Service is reachable"})
 
 @app.post("/classify")
 @app.post("/")
 async def classify_single_finger_safe(request: Request):
     api_key = request.headers.get("x-api-key") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=400, detail="Gemini API Key missing. Set GEMINI_API_KEY in Render Environment Variables.")
+        raise HTTPException(status_code=400, detail="Gemini API Key missing. Set GEMINI_API_KEY in Render.")
 
     image_bytes = None
     finger_code = "Unknown"
@@ -357,10 +378,10 @@ async def classify_single_finger_safe(request: Request):
             image_bytes = body_bytes
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed reading payload: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed reading upload: {str(e)}")
 
     if not image_bytes:
-        raise HTTPException(status_code=400, detail="No fingerprint image data received.")
+        raise HTTPException(status_code=400, detail="No image bytes received.")
 
     try:
         pattern_code, rc_left, rc_right = classify_fingerprint_image_ai(
@@ -374,9 +395,7 @@ async def classify_single_finger_safe(request: Request):
         code_upper = pattern_code.upper()
         code_lower = pattern_code.lower()
 
-        # Build base payload with all possible key and casing combinations
         core_data = {
-            # Uppercase option value codes (WT, WC, WP, U, R, A, AT)
             "pattern": code_upper,
             "pattern_type": code_upper,
             "pattern_code": code_upper,
@@ -386,21 +405,13 @@ async def classify_single_finger_safe(request: Request):
             "value": code_upper,
             "type": code_upper,
             "finger_pattern": code_upper,
-            "fingerPattern": code_upper,
             "classification": code_upper,
-            "detected_pattern": code_upper,
 
-            # Lowercase codes (wt, wc, wp, u, r, a, at)
             "pattern_lower": code_lower,
-            "pattern_slug": code_lower,
-
-            # Display name labels
             "pattern_name": display_name,
-            "patternName": display_name,
             "name": display_name,
             "label": display_name,
 
-            # Ridge counts
             "ridge_count": primary_rc,
             "ridgeCount": primary_rc,
             "rc": primary_rc,
@@ -414,7 +425,6 @@ async def classify_single_finger_safe(request: Request):
             "left_rc": rc_left,
             "leftRc": rc_left,
             "left_ridge_count": rc_left,
-            "leftRidgeCount": rc_left,
             "ridge_count_r": rc_right,
             "ridge_count_right": rc_right,
             "ridgeCountR": rc_right,
@@ -424,11 +434,9 @@ async def classify_single_finger_safe(request: Request):
             "rcR": rc_right,
             "right_rc": rc_right,
             "rightRc": rc_right,
-            "right_ridge_count": rc_right,
-            "rightRidgeCount": rc_right
+            "right_ridge_count": rc_right
         }
 
-        # Provide flat root keys AND nested wrapper objects
         result_payload = {
             **core_data,
             "data": core_data,
@@ -437,7 +445,7 @@ async def classify_single_finger_safe(request: Request):
             "fingerprint": core_data
         }
 
-        print(f"[Success] Set {finger_code} -> value='{code_upper}' | RC(L): {rc_left}, RC(R): {rc_right}")
+        print(f"[Success] {finger_code} -> {code_upper} ({display_name}) | RC(L): {rc_left}, RC(R): {rc_right}")
         return JSONResponse(content=result_payload)
 
     except Exception as e:
@@ -446,28 +454,18 @@ async def classify_single_finger_safe(request: Request):
 
 @app.post("/api/v1/auto-scan-and-generate-report")
 async def auto_scan_and_generate_report(
-    api_key: Optional[str] = Form(None, description="Your Google AI Studio Gemini API Key (or set via Render Env)"),
-    subject_id: str = Form("STUDENT_001", description="Subject/Client Name or ID"),
-    l1: UploadFile = File(..., description="Left Thumb Image"),
-    l2: UploadFile = File(..., description="Left Index Image"),
-    l3: UploadFile = File(..., description="Left Middle Image"),
-    l4: UploadFile = File(..., description="Left Ring Image"),
-    l5: UploadFile = File(..., description="Left Pinky Image"),
-    r1: UploadFile = File(..., description="Right Thumb Image"),
-    r2: UploadFile = File(..., description="Right Index Image"),
-    r3: UploadFile = File(..., description="Right Middle Image"),
-    r4: UploadFile = File(..., description="Right Ring Image"),
-    r5: UploadFile = File(..., description="Right Pinky Image"),
+    api_key: Optional[str] = Form(None),
+    subject_id: str = Form("STUDENT_001"),
+    l1: UploadFile = File(...), l2: UploadFile = File(...), l3: UploadFile = File(...),
+    l4: UploadFile = File(...), l5: UploadFile = File(...), r1: UploadFile = File(...),
+    r2: UploadFile = File(...), r3: UploadFile = File(...), r4: UploadFile = File(...),
+    r5: UploadFile = File(...)
 ):
     effective_api_key = api_key or os.environ.get("GEMINI_API_KEY")
     if not effective_api_key:
         raise HTTPException(status_code=400, detail="Gemini API key is required.")
 
-    uploads = {
-        "L1": l1, "L2": l2, "L3": l3, "L4": l4, "L5": l5,
-        "R1": r1, "R2": r2, "R3": r3, "R4": r4, "R5": r5
-    }
-
+    uploads = {"L1": l1, "L2": l2, "L3": l3, "L4": l4, "L5": l5, "R1": r1, "R2": r2, "R3": r3, "R4": r4, "R5": r5}
     finger_results = {}
 
     for code, file_obj in uploads.items():
@@ -476,7 +474,7 @@ async def auto_scan_and_generate_report(
             pattern_code, rc_l, rc_r = classify_fingerprint_image_ai(image_bytes, effective_api_key, code)
             finger_results[code] = {"pattern": pattern_code, "rc": max(rc_l, rc_r)}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to analyze image for {code}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to analyze {code}: {str(e)}")
 
     pdf_bytes = compile_dmit_report(subject_id, finger_results)
 
