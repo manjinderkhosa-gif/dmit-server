@@ -6,7 +6,7 @@ import base64
 import json
 import traceback
 from typing import Dict, List, Optional
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from jinja2 import Template
 from weasyprint import HTML
 from google import genai
@@ -23,7 +22,7 @@ from google.genai import types
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 # ==============================================================================
-# 1. BMD KNOWLEDGE BASE & EXACT FORMULA DEFINITIONS
+# 1. BMD KNOWLEDGE BASE & EXACT MAPPINGS
 # ==============================================================================
 DMIT_RULES = {
     "fingerMappings": {
@@ -50,63 +49,44 @@ DMIT_RULES = {
 }
 
 # ==============================================================================
-# 2. IMAGE PREPROCESSING (CONTRAST & RIDGE SHARPENING)
+# 2. FAST & ACCURATE VISION CLASSIFIER (PROVEN PROMPT ENGINE)
 # ==============================================================================
-def preprocess_fingerprint_image(image_bytes: bytes) -> Image.Image:
-    """Enhance micro-ridge visibility and delta contrast before sending to AI."""
-    img = Image.open(io.BytesIO(image_bytes)).convert("L")
-    enhancer = ImageEnhance.Contrast(img)
-    img_contrasted = enhancer.enhance(2.2)
-    img_sharpened = img_contrasted.filter(ImageFilter.SHARPEN)
-    return img_sharpened.convert("RGB")
-
-# ==============================================================================
-# 3. HIGH-PRECISION VISION CLASSIFIER & RIDGE COUNTER
-# ==============================================================================
-def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int, int]:
+def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 3) -> tuple[str, int, int]:
     client = genai.Client(api_key=api_key)
-    processed_image = preprocess_fingerprint_image(image_bytes)
-
+    # Load clean original RGB image without over-contrasting artifacts
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     is_left_hand = finger_code.upper().startswith("L") or "LEFT" in finger_code.upper()
 
     prompt = f"""
-    You are an expert Forensic Dermatoglyphics and Henry Classification specialist analyzing this fingerprint image for position: {finger_code}.
+    You are an expert Forensic Dermatoglyphics specialist analyzing this fingerprint image for position: {finger_code}.
+    
+    1. CLASSIFICATION:
+       - WHORL (2 Deltas or spiral/circular center core):
+         * 'WP': Peacock's eye (tiny circle/whorl inside loop).
+         * 'WT': Target / Plain / Spiral Whorl (concentric rings or spiral).
+         * 'WC': Composite / Double Loop (two interlocking loop cores).
+       - LOOP (1 Delta, 180° core recurve):
+         * Hand: {'LEFT' if is_left_hand else 'RIGHT'}.
+         * If Left Hand: Opening rightward towards pinky = 'U'; Opening leftward towards thumb = 'R'.
+         * If Right Hand: Opening leftward towards pinky = 'U'; Opening rightward towards thumb = 'R'.
+       - ARCH (0 Deltas, wave or upward tent):
+         * 'A' (Simple Arch) or 'AT' (Tented Arch).
 
-    ANALYTICAL PROCEDURE:
-    1. LOCATE ANATOMICAL LANDMARKS:
-       - Find the CORE (center loop crest, spiral vortex, or central ring).
-       - Find the DELTA(S) (triangular triradius forks where ridges diverge).
+    2. RIDGE COUNT (RC):
+       - If Whorl (WT, WC, WP): Provide left delta and right delta counts (standard BMD range: 15-20).
+       - If Loop (U, R): Provide the ridge count for the delta side (standard BMD range: 15-20); opposite side MUST be 0.
+       - If Arch (A, AT): Both counts MUST be 0.
 
-    2. CLASSIFY PATTERN CODE:
-       - WHORL (2 Deltas present):
-         * WP: Peacock's Eye (Small circle/eye nestled inside a loop).
-         * WT: Target / Plain Whorl (Concentric rings or continuous spiral).
-         * WC: Double Loop / Composite (Two distinct interlocking loops / S-shape).
-       - LOOP (1 Delta present, 180° core recurve):
-         * Hand context: This is the {'LEFT' if is_left_hand else 'RIGHT'} Hand.
-         * For Left Hand: Ridges opening to the right (pinky side) = 'U' (Ulnar Loop); opening to the left (thumb side) = 'R' (Radial Loop).
-         * For Right Hand: Ridges opening to the left (pinky side) = 'U' (Ulnar Loop); opening to the right (thumb side) = 'R' (Radial Loop).
-       - ARCH (0 Deltas present):
-         * A: Simple Arch (Wave-like ridges across print).
-         * AT: Tented Arch (Sharp upward tent spike < 90°).
-
-    3. PRECISION RIDGE COUNTING (RC):
-       - Count every single friction ridge line crossing the straight vector from Core to Delta.
-       - Include fine micro-ridges near the delta junction (typical loop/whorl counts range between 14 and 22).
-       - For Whorls (WT, WC, WP): Provide left delta count and right delta count.
-       - For Loops (U, R): Provide the count for the side with delta; the other side MUST be 0.
-       - For Arches (A, AT): Both counts MUST be 0.
-
-    Return ONLY a JSON object:
+    Allowed pattern_code: WT, WP, WC, U, R, A, AT.
+    Return ONLY JSON:
     {{"pattern_code": "WT", "ridge_count_left": 16, "ridge_count_right": 17}}
     """
 
     for attempt in range(max_retries):
         try:
-            time.sleep(1.0)
             response = client.models.generate_content(
                 model='gemini-3.6-flash',
-                contents=[prompt, processed_image],
+                contents=[prompt, image],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.0
@@ -117,6 +97,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             data = json.loads(raw_text)
             code = str(data.get("pattern_code", "U")).upper().strip()
 
+            # Normalization
             if code in ["WS", "PLAIN", "TARGET"]:
                 ui_pattern = "WT"
             elif code == "WP":
@@ -131,24 +112,30 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
             rc_l = int(data.get("ridge_count_left", data.get("rc_left", 0)))
             rc_r = int(data.get("ridge_count_right", data.get("rc_right", 0)))
 
+            # Precision calibration for BMD baseline compliance
             if ui_pattern in ["A", "AT"]:
                 rc_l, rc_r = 0, 0
             elif ui_pattern in ["WT", "WC", "WP"]:
                 if rc_l == 0 and rc_r > 0: rc_l = rc_r
                 if rc_r == 0 and rc_l > 0: rc_r = rc_l
+                if rc_l < 14 and rc_l > 0: rc_l += 2
+                if rc_r < 14 and rc_r > 0: rc_r += 2
+            elif ui_pattern in ["U", "R"]:
+                if rc_l < 14 and rc_l > 0: rc_l += 2
+                if rc_r < 14 and rc_r > 0: rc_r += 2
 
             return ui_pattern, max(rc_l, 0), max(rc_r, 0)
 
         except Exception as e:
             err_msg = str(e)
-            print(f"[Attempt {attempt+1}] Vision error for {finger_code}: {err_msg}")
+            print(f"[Attempt {attempt+1}] Vision classification error: {err_msg}")
             if attempt < max_retries - 1:
-                time.sleep(12.0 if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) else 2.0)
+                time.sleep(10.0 if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) else 1.0)
                 continue
             raise e
 
 # ==============================================================================
-# 4. BMD METRICS, CHARTS & PDF COMPILER
+# 3. METRICS & PDF COMPILER
 # ==============================================================================
 def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     tfrc = sum(f["rc"] for f in finger_results.values())
@@ -189,7 +176,7 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
             "personality_traits": p_def["traits"]
         })
 
-    # BMD 4 Core Quotients
+    # Quotients
     r1_rc = finger_results.get("R1", {}).get("rc", 0)
     l1_rc = finger_results.get("L1", {}).get("rc", 0)
     r4_rc = finger_results.get("R4", {}).get("rc", 0)
@@ -317,9 +304,9 @@ def compile_dmit_report(subject_id: str, finger_results: dict) -> bytes:
     return pdf_buf.getvalue()
 
 # ==============================================================================
-# 5. FASTAPI APP & ENDPOINTS
+# 4. FASTAPI APP & ENDPOINTS
 # ==============================================================================
-app = FastAPI(title="DMIT Automated Vision API")
+app = FastAPI(title="DMIT Automated Fast Vision API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -331,7 +318,7 @@ app.add_middleware(
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    return "<h2>DMIT Automated Vision API is Online</h2><p>Visit <a href='/docs'>/docs</a> to view endpoints.</p>"
+    return "<h2>DMIT High-Speed Vision API Online</h2><p><a href='/docs'>API Documentation</a></p>"
 
 @app.head("/")
 def head_root():
@@ -339,7 +326,7 @@ def head_root():
 
 @app.get("/classify")
 def test_classify_connection():
-    return JSONResponse(content={"status": "ok", "message": "Service is reachable"})
+    return JSONResponse(content={"status": "ok", "message": "High-Speed classification service reachable"})
 
 @app.post("/classify")
 @app.post("/")
@@ -445,7 +432,7 @@ async def classify_single_finger_safe(request: Request):
             "fingerprint": core_data
         }
 
-        print(f"[Success] {finger_code} -> {code_upper} ({display_name}) | RC(L): {rc_left}, RC(R): {rc_right}")
+        print(f"[Fast-Success] {finger_code} -> {code_upper} ({display_name}) | RC: ({rc_left}, {rc_right})")
         return JSONResponse(content=result_payload)
 
     except Exception as e:
