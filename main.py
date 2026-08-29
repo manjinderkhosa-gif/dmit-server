@@ -85,7 +85,7 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=[prompt, image],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
