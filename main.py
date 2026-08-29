@@ -52,7 +52,7 @@ DMIT_RULES = {
 # ==============================================================================
 # 2. AUTOMATED VISION CLASSIFIER
 # ==============================================================================
-def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 4) -> tuple[str, int, int]:
+def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code: str = "Unknown", max_retries: int = 2) -> tuple[str, int, int]:
     client = genai.Client(api_key=api_key)
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
@@ -78,23 +78,26 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
     {{"pattern_code": "WT", "ridge_count_left": 14, "ridge_count_right": 15}}
     """
 
+    overall_start = time.time()
+
     for attempt in range(max_retries):
+        attempt_start = time.time()
         try:
-            time.sleep(1.0)
             response = client.models.generate_content(
-                model='gemini-3.5-flash',
+                model='gemini-3.5-flash',  # corrected from 'gemini-3.6-flash'
                 contents=[prompt, image],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.1
                 ),
             )
+            elapsed = time.time() - attempt_start
+            print(f"[{finger_code}] Gemini call succeeded on attempt {attempt+1} in {elapsed:.2f}s")
 
             raw_text = response.text.strip()
             data = json.loads(raw_text)
             code = str(data.get("pattern_code", "U")).upper().strip()
-            
-            # Normalize code to the exact dropdown values
+
             if code in ["WS", "PLAIN", "TARGET"]:
                 code = "WT"
             elif code in ["WD", "DOUBLE_LOOP", "COMPOSITE"]:
@@ -114,17 +117,24 @@ def classify_fingerprint_image_ai(image_bytes: bytes, api_key: str, finger_code:
                 elif code == "R":
                     rc_l, rc_r = 0, est
 
+            total_elapsed = time.time() - overall_start
+            print(f"[{finger_code}] Total classify time: {total_elapsed:.2f}s")
             return code, max(rc_l, 0), max(rc_r, 0)
 
         except Exception as e:
+            elapsed = time.time() - attempt_start
             err_msg = str(e)
-            print(f"[Attempt {attempt+1}] Vision classification error: {err_msg}")
+            print(f"[{finger_code}] Attempt {attempt+1} FAILED after {elapsed:.2f}s: {err_msg}")
             if attempt < max_retries - 1:
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                    print(f"[{finger_code}] Rate limited - waiting 12s before retry")
                     time.sleep(12.0)
                 else:
-                    time.sleep((2 ** attempt) * 2)
+                    print(f"[{finger_code}] Retrying in 2s")
+                    time.sleep(2.0)
                 continue
+            total_elapsed = time.time() - overall_start
+            print(f"[{finger_code}] All {max_retries} attempts failed. Total time: {total_elapsed:.2f}s")
             raise e
 
 # ==============================================================================
